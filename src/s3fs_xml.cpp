@@ -87,6 +87,7 @@ static bool GetXmlNsUrl(xmlDocPtr doc, std::string& nsurl)
 
 static xmlChar* get_base_exp(xmlDocPtr doc, const char* exp)
 {
+    S3FS_PRN_INIT_INFO("get_base_exp=%s","exp");
     xmlXPathObjectPtr  marker_xp;
     std::string xmlnsurl;
     std::string exp_string;
@@ -421,6 +422,7 @@ int append_objects_from_xml_ex(const char* path, xmlDocPtr doc, xmlXPathContextP
 
 int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
 {
+    S3FS_PRN_INIT_INFO("[path=%s]",path);
     std::string xmlnsurl;
     std::string ex_contents = "//";
     std::string ex_key;
@@ -431,16 +433,18 @@ int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
     if(!doc){
         return -1;
     }
-
+    S3FS_PRN_INIT_INFO("[path=%s]","1");
     // If there is not <Prefix>, use path instead of it.
     xmlChar* pprefix = get_prefix(doc);
+    S3FS_PRN_INIT_INFO("[path=%s]",pprefix);
     std::string prefix  = (pprefix ? reinterpret_cast<char*>(pprefix) : path ? path : "");
+    S3FS_PRN_INIT_INFO("[path=%s]","1.2");
     if(pprefix){
         xmlFree(pprefix);
     }
-
+    S3FS_PRN_INIT_INFO("[path=%s]","1.3");
     xmlXPathContextPtr ctx = xmlXPathNewContext(doc);
-
+    S3FS_PRN_INIT_INFO("[path=%s]","2");
     if(!noxmlns && GetXmlNsUrl(doc, xmlnsurl)){
         xmlXPathRegisterNs(ctx, reinterpret_cast<const xmlChar*>("s3"), reinterpret_cast<const xmlChar*>(xmlnsurl.c_str()));
         ex_contents+= "s3:";
@@ -454,7 +458,7 @@ int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
     ex_cprefix += "CommonPrefixes";
     ex_prefix  += "Prefix";
     ex_etag    += "ETag";
-
+    S3FS_PRN_INIT_INFO("[path=%s]","3");
     if(-1 == append_objects_from_xml_ex(prefix.c_str(), doc, ctx, ex_contents.c_str(), ex_key.c_str(), ex_etag.c_str(), 0, head) ||
        -1 == append_objects_from_xml_ex(prefix.c_str(), doc, ctx, ex_cprefix.c_str(), ex_prefix.c_str(), NULL, 1, head) )
     {
@@ -463,7 +467,7 @@ int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
         return -1;
     }
     S3FS_XMLXPATHFREECONTEXT(ctx);
-
+    S3FS_PRN_INIT_INFO("[%s]","success");
     return 0;
 }
 
