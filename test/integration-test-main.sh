@@ -1575,6 +1575,196 @@ function test_rm_rf_dir {
    fi
 }
 
+function test_posix_acl {
+    describe "Testing posix acl function ..."
+
+    #------------------------------------------------------
+    # Directory
+    #------------------------------------------------------
+    local POSIX_ACL_TEST_DIR1="posix_acl_dir1"
+    local POSIX_ACL_TEST_DIR2="posix_acl_dir2"
+    mkdir "${POSIX_ACL_TEST_DIR1}"
+
+    #
+    # Set posix acl(not default)
+    #
+    setfacl -m "u:${USER}:rwx" "${POSIX_ACL_TEST_DIR1}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR1}" | grep -q "^user:${USER}:rwx"; then
+       echo "Could not set posix acl(not default) to ${POSIX_ACL_TEST_DIR1} directory"
+       return 1
+    fi
+
+    #
+    # Set posix acl(default)
+    #
+    setfacl -d -m "u:${USER}:rwx" "${POSIX_ACL_TEST_DIR1}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR1}" | grep -q "^default:user:${USER}:rwx"; then
+       echo "Could not set posix acl(default) to ${POSIX_ACL_TEST_DIR1} directory"
+       return 1
+    fi
+
+    #
+    # Rename
+    #
+    mv "${POSIX_ACL_TEST_DIR1}" "${POSIX_ACL_TEST_DIR2}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^user:${USER}:rwx"; then
+       echo "Could not move with posix acl(not default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+    if ! getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^default:user:${USER}:rwx"; then
+       echo "Could not move with posix acl(default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #
+    # Copy with permission
+    #
+    cp -rp "${POSIX_ACL_TEST_DIR2}" "${POSIX_ACL_TEST_DIR1}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR1}" | grep -q "^user:${USER}:rwx"; then
+       echo "Could not copy with posix acl(not default) to ${POSIX_ACL_TEST_DIR1} directory"
+       return 1
+    fi
+    if ! getfacl "${POSIX_ACL_TEST_DIR1}" | grep -q "^default:user:${USER}:rwx"; then
+       echo "Could not copy with posix acl(default) to ${POSIX_ACL_TEST_DIR1} directory"
+       return 1
+    fi
+
+    #
+    # Overwrite posix acl(not default)
+    #
+    setfacl -m "u:${USER}:r-x" "${POSIX_ACL_TEST_DIR2}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^user:${USER}:r-x"; then
+       echo "Could not set posix acl(not default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #
+    # Overwrite posix acl(default)
+    #
+    setfacl -d -m "u:${USER}:r-x" "${POSIX_ACL_TEST_DIR2}"
+    if ! getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^default:user:${USER}:r-x"; then
+       echo "Could not set posix acl(default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #
+    # Remove posix acl(default)
+    #
+    setfacl -k "${POSIX_ACL_TEST_DIR2}"
+    if getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^default:user:${USER}"; then
+       echo "Could not remove posix acl(default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #
+    # Remove posix acl(all)
+    #
+    setfacl -b "${POSIX_ACL_TEST_DIR2}"
+    if getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^user:${USER}"; then
+       echo "Could not remove posix acl(all) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #
+    # Copy without permission
+    #
+    rm -rf "${POSIX_ACL_TEST_DIR2}"
+    cp -r "${POSIX_ACL_TEST_DIR1}" "${POSIX_ACL_TEST_DIR2}"
+    if getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^default:user:${USER}"; then
+       echo "Could not copy without posix acl(default) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+    if getfacl "${POSIX_ACL_TEST_DIR2}" | grep -q "^user:${USER}"; then
+       echo "Could not copy without posix acl(all) to ${POSIX_ACL_TEST_DIR2} directory"
+       return 1
+    fi
+
+    #------------------------------------------------------
+    # File
+    #------------------------------------------------------
+    local POSIX_ACL_TEST_FILE1="posix_acl_dir1/posix_acl_file1"
+    local POSIX_ACL_TEST_FILE2="posix_acl_dir1/posix_acl_file2"
+    local POSIX_ACL_TEST_FILE3="posix_acl_dir2/posix_acl_file3"
+    local POSIX_ACL_TEST_FILE4="posix_acl_dir2/posix_acl_file4"
+    mkdir "${POSIX_ACL_TEST_DIR2}"
+    touch "${POSIX_ACL_TEST_FILE1}"
+
+    #
+    # Check default inherited posix acl
+    #
+    if ! getfacl "${POSIX_ACL_TEST_FILE1}" | grep -q "^user:${USER}:rwx"; then
+       echo "Could not set posix acl(inherited default) to ${POSIX_ACL_TEST_FILE1} file"
+       return 1
+    fi
+
+    #
+    # Overwrite posix acl
+    #
+    setfacl -m "u:${USER}:r-x" "${POSIX_ACL_TEST_FILE1}"
+    if ! getfacl "${POSIX_ACL_TEST_FILE1}" | grep -q "^user:${USER}:r-x"; then
+       echo "Could not overwrite posix acl to ${POSIX_ACL_TEST_FILE1} file"
+       return 1
+    fi
+
+    #
+    # Rename
+    #
+    mv "${POSIX_ACL_TEST_FILE1}" "${POSIX_ACL_TEST_FILE2}"
+    if ! getfacl "${POSIX_ACL_TEST_FILE2}" | grep -q "^user:${USER}:r-x"; then
+       echo "Could not move with posix acl to ${POSIX_ACL_TEST_FILE2} file"
+       return 1
+    fi
+
+    #
+    # Copy with permission
+    #
+    cp -p "${POSIX_ACL_TEST_FILE2}" "${POSIX_ACL_TEST_FILE1}"
+    if ! getfacl "${POSIX_ACL_TEST_FILE1}" | grep -q "^user:${USER}:r-x"; then
+       echo "Could not copy with posix acl to ${POSIX_ACL_TEST_FILE1} file"
+       return 1
+    fi
+
+    #
+    # Remove posix acl
+    #
+    setfacl -b "${POSIX_ACL_TEST_FILE2}"
+    if getfacl "${POSIX_ACL_TEST_FILE2}" | grep -q "^default:user:${USER}"; then
+       echo "Could not remove posix acl to ${POSIX_ACL_TEST_FILE2} file"
+       return 1
+    fi
+
+    #
+    # Copy without permission(set parent directory default acl)
+    #
+    rm -f "${POSIX_ACL_TEST_FILE2}"
+    cp "${POSIX_ACL_TEST_FILE1}" "${POSIX_ACL_TEST_FILE2}"
+    if ! getfacl "${POSIX_ACL_TEST_FILE2}" | grep -q "^user:${USER}:rwx"; then
+       echo "Could not copy without posix acl(inherited parent) to ${POSIX_ACL_TEST_FILE2} file"
+       return 1
+    fi
+
+    #
+    # Copy with permission(to no-acl directory)
+    #
+    cp -p "${POSIX_ACL_TEST_FILE1}" "${POSIX_ACL_TEST_FILE3}"
+    if ! getfacl "${POSIX_ACL_TEST_FILE3}" | grep -q "^user:${USER}:r-x"; then
+       echo "Could not copy with posix acl to ${POSIX_ACL_TEST_FILE3} file in no-acl directory"
+       return 1
+    fi
+
+    #
+    # Copy without permission(to no-acl directory)
+    #
+    cp "${POSIX_ACL_TEST_FILE1}" "${POSIX_ACL_TEST_FILE4}"
+    if getfacl "${POSIX_ACL_TEST_FILE4}" | grep -q "^user:${USER}"; then
+       echo "Could not copy without posix acl to ${POSIX_ACL_TEST_FILE4} file in no-acl directory"
+       return 1
+    fi
+
+    rm -rf "${POSIX_ACL_TEST_DIR1}"
+    rm -rf "${POSIX_ACL_TEST_DIR2}"
+}
+
 function test_copy_file {
    describe "Test simple copy ..."
 
@@ -2011,6 +2201,157 @@ function test_ensurespace_move_file() {
     rm -rf "${CACHE_DIR}/.s3fs_test_tmpdir"
 }
 
+function test_not_existed_dir_obj() {
+    describe "Test not existed directory object..."
+
+    local DIR_NAME; DIR_NAME=$(basename "${PWD}")
+
+    #
+    # Create files under not existed directory by aws command
+    #
+    local OBJECT_NAME_1; OBJECT_NAME_1="${DIR_NAME}/not_existed_dir_single/${TEST_TEXT_FILE}"
+    local OBJECT_NAME_2; OBJECT_NAME_2="${DIR_NAME}/not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}"
+    echo data1 | aws_cli s3 cp - "s3://${TEST_BUCKET_1}/${OBJECT_NAME_1}"
+    echo data2 | aws_cli s3 cp - "s3://${TEST_BUCKET_1}/${OBJECT_NAME_2}"
+
+    # shellcheck disable=SC2009
+    if ps u -p "${S3FS_PID}" | grep -q compat_dir; then
+        #
+        # with "compat_dir", found directories and files
+        #
+
+        # Top directory
+        # shellcheck disable=SC2010
+        if ! ls -1 | grep -q '^not_existed_dir_single$'; then
+            echo "Expect to find \"not_existed_dir_single\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 | grep -q '^not_existed_dir_parent$'; then
+            echo "Expect to find \"not_existed_dir_parent\" directory, but it is not found"
+            return 1;
+        fi
+
+        # Single nest directory
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_single | grep -q '^not_existed_dir_single$'; then
+            echo "Expect to find \"not_existed_dir_single\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 not_existed_dir_single | grep -q "^${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_single/${TEST_TEXT_FILE}\" file, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 "not_existed_dir_single/${TEST_TEXT_FILE}" | grep -q "^not_existed_dir_single/${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_single/${TEST_TEXT_FILE}\" file, but it is not found"
+            return 1;
+        fi
+
+        # Double nest directory
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_parent | grep -q '^not_existed_dir_parent'; then
+            echo "Expect to find \"not_existed_dir_parent\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 not_existed_dir_parent | grep -q '^not_existed_dir_child'; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_parent/not_existed_dir_child | grep -q '^not_existed_dir_parent/not_existed_dir_child'; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 not_existed_dir_parent/not_existed_dir_child | grep -q "^${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 "not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}" | grep -q "^not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\" directory, but it is not found"
+            return 1;
+        fi
+
+        rm -rf not_existed_dir_single
+        rm -rf not_existed_dir_parent
+
+    else
+        #
+        # without "compat_dir", found directories and files
+        #
+        # [NOTE]
+        # If specify a directory path, the file under that directory will be found.
+        # And if specify a file full path, it will be found.
+        #
+
+        # Top directory
+        # shellcheck disable=SC2010
+        if ls -1 | grep -q '^not_existed_dir_single$'; then
+            echo "Expect to not find \"not_existed_dir_single\" directory, but it is found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ls -1 | grep -q '^not_existed_dir_parent$'; then
+            echo "Expect to not find \"not_existed_dir_parent\" directory, but it is found"
+            return 1;
+        fi
+
+        # Single nest directory
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_single | grep -q '^not_existed_dir_single$'; then
+            echo "Expect to find \"not_existed_dir_single\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 not_existed_dir_single | grep -q "^${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_single/${TEST_TEXT_FILE}\" file, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 "not_existed_dir_single/${TEST_TEXT_FILE}" | grep -q "^not_existed_dir_single/${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_single/${TEST_TEXT_FILE}\" file, but it is not found"
+            return 1;
+        fi
+
+        # Double nest directory
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_parent | grep -q '^not_existed_dir_parent'; then
+            echo "Expect to find \"not_existed_dir_parent\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ls -1 not_existed_dir_parent | grep -q '^not_existed_dir_child'; then
+            echo "Expect to not find \"not_existed_dir_parent/not_existed_dir_child\" directory, but it is found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -d not_existed_dir_parent/not_existed_dir_child | grep -q '^not_existed_dir_parent/not_existed_dir_child'; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 not_existed_dir_parent/not_existed_dir_child | grep -q "^${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\" directory, but it is not found"
+            return 1;
+        fi
+        # shellcheck disable=SC2010
+        if ! ls -1 "not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}" | grep -q "^not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\$"; then
+            echo "Expect to find \"not_existed_dir_parent/not_existed_dir_child/${TEST_TEXT_FILE}\" directory, but it is not found"
+            return 1;
+        fi
+
+        rm -rf not_existed_dir_single
+
+        # [NOTE]
+        # This case could not remove sub directory, then below command will be failed.
+        #rm -rf not_existed_dir_parent
+    fi
+}
+
 function test_ut_ossfs {
     describe "Testing ossfs python ut..."
 
@@ -2306,6 +2647,11 @@ function add_all_tests {
     add_tests test_update_chmod_opened_file
     add_tests test_update_parent_directory_time
 
+    # shellcheck disable=SC2009
+    if ! ps u -p "${S3FS_PID}" | grep -q use_xattr; then
+        add_tests test_posix_acl
+    fi
+
     add_tests test_rm_rf_dir
     add_tests test_copy_file
     add_tests test_write_after_seek_ahead
@@ -2320,6 +2666,7 @@ function add_all_tests {
     add_tests test_truncate_cache
     add_tests test_upload_sparsefile
     add_tests test_mix_upload_entities
+    add_tests test_not_existed_dir_obj
     add_tests test_ut_ossfs
     # shellcheck disable=SC2009
     if ! ps u -p "${S3FS_PID}" | grep -q ensure_diskfree && ! uname | grep -q Darwin; then
