@@ -2265,6 +2265,13 @@ static int update_mctime_parent_directory(const char* _path)
     if(nocopyapi || IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(parentpath.c_str())){
         // Should rebuild directory object(except new type)
         // Need to remove old dir("dir" etc) and make new dir("dir/")
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
 
         // At first, remove directory old object
         if(!nowpath.empty()){
@@ -2277,7 +2284,7 @@ static int update_mctime_parent_directory(const char* _path)
         }
 
         // Make new directory object("dir/")
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
