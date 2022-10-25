@@ -16,7 +16,7 @@ cd /tmp/s3fs-fuse && ./autogen.sh && ./configure && make LDFLAGS="-Wl,--copy-dt-
 ldconfig && /usr/local/bin/s3fs --version && \
 mkdir -p "$MNT_POINT" && \
 DEBIAN_FRONTEND=noninteractive apt-get purge -y wget automake autotools-dev g++ git make && \
-apt-get -y autoremove --purge && apt-get clean && echo $ACCESS_KEY:$SECRET_ACCESS_KEY > ${HOME}/.passwd-s3fs && chmod 600 ${HOME}/.passwd-s3fs && \
+apt-get -y autoremove --purge && apt-get clean && \
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-CMD exec /usr/local/bin/s3fs $S3_BUCKET $MNT_POINT -f -o passwd_file=${HOME}/.passwd-s3fs -o url=$S3_URL $OPTION
+CMD echo $ACCESS_KEY:$SECRET_ACCESS_KEY > ${HOME}/.passwd-s3fs && chmod 600 ${HOME}/.passwd-s3fs && exec /usr/local/bin/s3fs $S3_BUCKET $MNT_POINT -f -o passwd_file=${HOME}/.passwd-s3fs -o url=$S3_URL $OPTION
