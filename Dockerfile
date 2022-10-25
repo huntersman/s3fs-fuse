@@ -25,15 +25,6 @@ RUN apk --no-cache add \
 
 FROM alpine:$ALPINE_VERSION
 
-# Metadata
-LABEL MAINTAINER=efrecon+github@gmail.com
-LABEL org.opencontainers.image.title="efrecon/s3fs"
-LABEL org.opencontainers.image.description="Mount S3 buckets from within a container and expose them to host/containers"
-LABEL org.opencontainers.image.authors="Emmanuel Frécon <efrecon+github@gmail.com>"
-LABEL org.opencontainers.image.url="https://github.com/efrecon/docker-s3fs-client"
-LABEL org.opencontainers.image.documentation="https://github.com/efrecon/docker-s3fs-client/README.md"
-LABEL org.opencontainers.image.source="https://github.com/efrecon/docker-s3fs-client/Dockerfile"
-
 COPY --from=build /usr/bin/s3fs /usr/bin/s3fs
 
 # Specify URL and secrets. When using AWS_S3_SECRET_ACCESS_KEY_FILE, the secret
@@ -80,17 +71,3 @@ WORKDIR /opt/s3fs
 
 # Following should match the AWS_S3_MOUNT environment variable.
 VOLUME [ "/opt/s3fs/bucket" ]
-
-HEALTHCHECK \
-  --interval=15s \
-  --timeout=5s \
-  --start-period=15s \
-  --retries=2 \
-  CMD [ "/usr/local/bin/healthcheck.sh" ]
-
-# The default is to perform all system-level mounting as part of the entrypoint
-# to then have a command that will keep listing the files under the main share.
-# Listing the files will keep the share active and avoid that the remote server
-# closes the connection.
-ENTRYPOINT [ "tini", "-g", "--", "docker-entrypoint.sh" ]
-CMD [ "empty.sh" ]
