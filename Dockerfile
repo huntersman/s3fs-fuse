@@ -12,7 +12,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get -y update --fix-missing && \
 apt-get install -y automake autotools-dev g++ git libcurl4-gnutls-dev wget \
 libfuse-dev libssl-dev libxml2-dev make pkg-config && \
 git clone https://github.com/huntersman/s3fs-fuse.git /tmp/s3fs-fuse && \
-cd /tmp/s3fs-fuse && ./autogen.sh && ./configure && make LDFLAGS="-Wl,--copy-dt-needed-entries" && make install && \
+cd /tmp/s3fs-fuse && ./autogen.sh && ./configure && make && make install && \
 ldconfig && /usr/local/bin/s3fs --version && \
 mkdir -p "$MNT_POINT" && \
 DEBIAN_FRONTEND=noninteractive apt-get purge -y wget automake autotools-dev g++ git make && \
