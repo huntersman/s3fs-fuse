@@ -18,9 +18,8 @@ RUN apk --no-cache add \
     curl-dev && \
   git clone https://github.com/huntersman/s3fs-fuse.git && \
   cd s3fs-fuse && \
-  git checkout tags/${S3FS_VERSION} && \
   ./autogen.sh && \
-  ./configure --prefix=/usr && \
+  ./configure && \
   make LDFLAGS="-Wl,--copy-dt-needed-entries" && \
   make install
 
