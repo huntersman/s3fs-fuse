@@ -29,7 +29,7 @@ jobs: # workflow中的job
         id: meta
         uses: docker/metadata-action@v4  # 抽取项目信息，主要是镜像的tag
         with:
-          images: hunterman1/s3fs-fuse:latest
+          images: hunterman1/s3fs-fuse
 
       - name: Build and push
         uses: docker/build-push-action@v3
