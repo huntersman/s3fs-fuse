@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <getopt.h>
+#include <list>
 
 #include "common.h"
 #include "s3fs.h"
@@ -100,7 +101,7 @@ static bool use_wtf8              = false;
 static off_t fake_diskfree_size   = -1; // default is not set(-1)
 static int max_thread_count       = 5;  // default is 5
 static bool update_parent_dir_stat= true;   // default support updating parent directory stats
-
+static std::list<BodyData*> myCache;
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -3287,78 +3288,129 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
     }else{
         query_maxkey += "max-keys=" + str(max_keys_list_object);
     }
-
-    while(truncated){
-        // append parameters to query in alphabetical order
-        std::string each_query;
-        if(!next_continuation_token.empty()){
-            each_query += "continuation-token=" + urlEncode(next_continuation_token) + "&";
-            next_continuation_token = "";
-        }
-        each_query += query_delimiter;
-        if(S3fsCurl::IsListObjectsV2()){
-            each_query += "list-type=2&";
-        }
-        if(!next_marker.empty()){
-            each_query += "marker=" + urlEncode(next_marker) + "&";
-            next_marker = "";
-        }
-        each_query += query_maxkey;
-        each_query += query_prefix;
-
-        // request
-        int result;
-        if(0 != (result = s3fscurl.ListBucketRequest(path, each_query.c_str()))){
-            S3FS_PRN_ERR("ListBucketRequest returns with error.");
-            return result;
-        }
-        BodyData* body = s3fscurl.GetBodyData();
-
-        // xmlDocPtr
-        if(NULL == (doc = xmlReadMemory(body->str(), static_cast<int>(body->size()), "", NULL, 0))){
-            S3FS_PRN_ERR("xmlReadMemory returns with error.");
-            return -EIO;
-        }
-        if(0 != append_objects_from_xml(path, doc, head)){
-            S3FS_PRN_ERR("append_objects_from_xml returns with error.");
-            xmlFreeDoc(doc);
-            return -EIO;
-        }
-        if(true == (truncated = is_truncated(doc))){
-            xmlChar* tmpch;
-            if(NULL != (tmpch = get_next_continuation_token(doc))){
-                next_continuation_token = reinterpret_cast<char*>(tmpch);
-                xmlFree(tmpch);
-            }else if(NULL != (tmpch = get_next_marker(doc))){
-                next_marker = reinterpret_cast<char*>(tmpch);
-                xmlFree(tmpch);
+    // 缓存doc
+    if (myCache.empty()){
+        S3FS_PRN_INIT_INFO("Cache is %s","empty");
+        while(truncated){
+            // append parameters to query in alphabetical order
+            std::string each_query;
+            if(!next_continuation_token.empty()){
+                each_query += "continuation-token=" + urlEncode(next_continuation_token) + "&";
+                next_continuation_token = "";
             }
+            each_query += query_delimiter;
+            if(S3fsCurl::IsListObjectsV2()){
+                each_query += "list-type=2&";
+            }
+            if(!next_marker.empty()){
+                each_query += "marker=" + urlEncode(next_marker) + "&";
+                next_marker = "";
+            }
+            each_query += query_maxkey;
+            each_query += query_prefix;
 
-            if(next_continuation_token.empty() && next_marker.empty()){
-                // If did not specify "delimiter", s3 did not return "NextMarker".
-                // On this case, can use last name for next marker.
-                //
-                std::string lastname;
-                if(!head.GetLastName(lastname)){
-                    S3FS_PRN_WARN("Could not find next marker, thus break loop.");
-                    truncated = false;
-                }else{
-                    next_marker = s3_realpath.substr(1);
-                    if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
-                        next_marker += "/";
+            // request
+            int result;
+            if(0 != (result = s3fscurl.ListBucketRequest(path, each_query.c_str()))){
+                S3FS_PRN_ERR("ListBucketRequest returns with error.");
+                return result;
+            }
+            BodyData* body = s3fscurl.GetBodyData();
+            
+            myCache.push_back(body);
+
+            // xmlDocPtr
+            if(NULL == (doc = xmlReadMemory(body->str(), static_cast<int>(body->size()), "", NULL, 0))){
+                S3FS_PRN_ERR("xmlReadMemory returns with error.");
+                return -EIO;
+            }
+            if(0 != append_objects_from_xml(path, doc, head)){
+                S3FS_PRN_ERR("append_objects_from_xml returns with error.");
+                xmlFreeDoc(doc);
+                return -EIO;
+            }
+            if(true == (truncated = is_truncated(doc))){
+                xmlChar* tmpch;
+                if(NULL != (tmpch = get_next_continuation_token(doc))){
+                    next_continuation_token = reinterpret_cast<char*>(tmpch);
+                    xmlFree(tmpch);
+                }else if(NULL != (tmpch = get_next_marker(doc))){
+                    next_marker = reinterpret_cast<char*>(tmpch);
+                    xmlFree(tmpch);
+                }
+
+                if(next_continuation_token.empty() && next_marker.empty()){
+                    // If did not specify "delimiter", s3 did not return "NextMarker".
+                    // On this case, can use last name for next marker.
+                    //
+                    std::string lastname;
+                    if(!head.GetLastName(lastname)){
+                        S3FS_PRN_WARN("Could not find next marker, thus break loop.");
+                        truncated = false;
+                    }else{
+                        next_marker = s3_realpath.substr(1);
+                        if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
+                            next_marker += "/";
+                        }
+                        next_marker += lastname;
                     }
-                    next_marker += lastname;
                 }
             }
-        }
-        S3FS_XMLFREEDOC(doc);
 
-        // reset(initialize) curl object
-        s3fscurl.DestroyCurlHandle();
-
-        if(check_content_only){
-            break;
+            S3FS_XMLFREEDOC(doc);
+            // reset(initialize) curl object
+            s3fscurl.DestroyCurlHandle();
+            if(check_content_only){
+                break;
+            }
         }
+    }else{
+        S3FS_PRN_INIT_INFO("Cache is %s","not empty");
+        for (std::list<BodyData*>::iterator it = myCache.begin(); it != myCache.end(); ++it){
+            S3FS_PRN_INIT_INFO("[start=%s]", "body get value");
+            BodyData* body=*it;
+            // xmlDocPtr
+            if(NULL == (doc = xmlReadMemory(body->str(), static_cast<int>(body->size()), "", NULL, 0))){
+                S3FS_PRN_ERR("xmlReadMemory returns with error.");
+                return -EIO;
+            }
+            if(0 != append_objects_from_xml(path, doc, head)){
+                S3FS_PRN_ERR("append_objects_from_xml returns with error.");
+                xmlFreeDoc(doc);
+                return -EIO;
+            }
+            if(true == (truncated = is_truncated(doc))){
+                S3FS_PRN_INIT_INFO("%s","is_truncated.");
+                xmlChar* tmpch;
+                if(NULL != (tmpch = get_next_continuation_token(doc))){
+                    S3FS_PRN_INIT_INFO("%s","get_next_continuation_token.");
+                    next_continuation_token = reinterpret_cast<char*>(tmpch);
+                    xmlFree(tmpch);
+                }else if(NULL != (tmpch = get_next_marker(doc))){
+                    S3FS_PRN_INIT_INFO("%s","get_next_marker.");
+                    next_marker = reinterpret_cast<char*>(tmpch);
+                    xmlFree(tmpch);
+                }
+                if(next_continuation_token.empty() && next_marker.empty()){
+                    S3FS_PRN_INIT_INFO("%s","next empty.");
+                    std::string lastname;
+                    if(!head.GetLastName(lastname)){
+                        S3FS_PRN_WARN("Could not find next marker, thus break loop.");
+                        truncated = false;
+                    }else{
+                        next_marker = s3_realpath.substr(1);
+                        if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
+                            next_marker += "/";
+                        }
+                        next_marker += lastname;
+                    }
+                }
+            }
+            S3FS_XMLFREEDOC(doc);
+        }
+    }
+    if (myCache.size()==1){
+        myCache.clear();
     }
     S3FS_MALLOCTRIM(0);
 
