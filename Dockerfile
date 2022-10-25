@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:16.04
 
 # 定义Dockerfile中CMD exec指令使用的ENV环境变量
 ENV S3_BUCKET ''
