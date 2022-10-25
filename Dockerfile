@@ -21,7 +21,7 @@ RUN apk --no-cache add \
   git checkout tags/${S3FS_VERSION} && \
   ./autogen.sh && \
   ./configure --prefix=/usr && \
-  make -j && \
+  make LDFLAGS="-Wl,--copy-dt-needed-entries" && \
   make install
 
 FROM alpine:$ALPINE_VERSION
