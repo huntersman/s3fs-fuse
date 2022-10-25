@@ -2,7 +2,7 @@ FROM ubuntu:16.04
 
 # 定义Dockerfile中CMD exec指令使用的ENV环境变量
 ENV S3_BUCKET ''
-ENV MNT_POINT /data
+ENV MNT_POINT ''
 ENV S3_URL ''
 ENV OPTION ''
 ENV ACCESS_KEY ''
