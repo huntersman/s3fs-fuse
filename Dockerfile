@@ -22,7 +22,7 @@ RUN apk --no-cache add \
   ./autogen.sh && \
   ./configure --prefix=/usr && \
   make -j && \
-  make install LDFLAGS="-Wl,--copy-dt-needed-entries"
+  make install
 
 FROM alpine:$ALPINE_VERSION
 
@@ -42,12 +42,12 @@ COPY --from=build /usr/bin/s3fs /usr/bin/s3fs
 # using Docker secrets. You can either specify the path to an authorisation
 # file, set environment variables with the key and the secret.
 ENV AWS_S3_URL=https://s3.amazonaws.com
-ENV AWS_S3_ACCESS_KEY_ID=accessKey
-ENV AWS_S3_SECRET_ACCESS_KEY=secretKey
-ENV AWS_S3_BUCKET=bucket
+ENV AWS_S3_ACCESS_KEY_ID=''
+ENV AWS_S3_SECRET_ACCESS_KEY=''
+ENV AWS_S3_BUCKET=''
 
 # User and group ID of S3 mount owner
-ENV RUN_AS=root
+ENV RUN_AS=''
 ENV UID=0
 ENV GID=0
 
@@ -56,7 +56,7 @@ ENV AWS_S3_MOUNT=/opt/s3fs/bucket
 
 # s3fs tuning
 ENV S3FS_DEBUG=0
-ENV S3FS_ARGS=compat_dir
+ENV S3FS_ARGS=''
 
 RUN mkdir /opt/s3fs && \
     apk --no-cache add \
