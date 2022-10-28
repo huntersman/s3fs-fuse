@@ -25,6 +25,11 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <getopt.h>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <unistd.h>
+#include <list>
 
 #include "common.h"
 #include "s3fs.h"
@@ -63,6 +68,13 @@ enum dirtype {
     DIRTYPE_OLD = 1,
     DIRTYPE_FOLDER = 2,
     DIRTYPE_NOOBJ = 3,
+};
+
+struct moss_cache {
+    unsigned len;
+    unsigned size;
+    char* contents;
+    struct timespec time;
 };
 
 //-------------------------------------------------------------------
@@ -3214,9 +3226,49 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     return result;
 }
 
+static std::map<std::string, struct moss_cache*> cache_map;
+static std::mutex cache_lock;
+static std::list<std::string> cache_list;
+
 static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
+
+    S3FS_PRN_INFO("[path=%s] [offset=%ld]", path, offset);
+    std::string cache_key = path;
+    int* fuse = (int*)(buf + 40);
+    cache_key += *fuse;
+    std::map<std::string, struct moss_cache*>::iterator cache_it;
+    cache_lock.lock();
+    cache_it = cache_map.find(cache_key);
+    struct moss_cache* cache  = NULL;
+    if(cache_it != cache_map.end()) {
+        struct timespec cur_time = {0, 0};
+        clock_gettime(CLOCK_MONOTONIC, &cur_time);
+        if(cur_time.tv_sec - cache_it->second->time.tv_sec < 5) {
+            cache = cache_it->second;
+            unsigned* len = ( unsigned*)(buf + 68);
+            *len = cache->len;
+            unsigned* size = ( unsigned*)(buf + 72);
+            *size = cache->size;
+            char* cp_contents = (char*) malloc(cache->size);
+            memcpy(cp_contents, cache->contents, cache->size);
+            char ** contents_pointer = (char**) (buf+56);
+            if(*contents_pointer != NULL) {
+                free(*contents_pointer);
+            }
+
+            *contents_pointer = cp_contents;
+            cache_list.remove(cache_key);
+            cache_list.push_back(cache_key);
+        }
+    }
+
+    cache_lock.unlock();
+
+    if(cache != NULL) {
+        return 0;
+    }
     S3ObjList head;
     int result;
 
@@ -3248,6 +3300,35 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
         S3FS_PRN_ERR("readdir_multi_head returns error(%d).", result);
     }
     S3FS_MALLOCTRIM(0);
+
+    cache  = (struct moss_cache*) malloc(sizeof(struct moss_cache));
+    cache->len = *( unsigned*)(buf + 68);
+    cache->size = *( unsigned*)(buf + 72);
+    cache->contents = (char*) malloc(cache->size);
+    clock_gettime(CLOCK_MONOTONIC, &cache->time);
+    char ** contents_pointer = (char**) (buf+56);
+    memcpy(cache->contents, *contents_pointer, cache->size);
+
+    cache_lock.lock();
+    cache_it = cache_map.find(cache_key);
+    if(cache_it != cache_map.end()) {
+        free(cache_it->second->contents);
+        free(cache_it->second);
+    }
+    cache_map[cache_key] = cache;
+
+    if(cache_key.size() > 10) {
+        std::string remove_key = cache_list.front();
+        cache_list.pop_front();
+        cache_it =  cache_map.find(cache_key);
+        if(cache_it != cache_map.end()) {
+            cache_map.erase(cache_key);
+            free(cache_it->second->contents);
+            free(cache_it->second);
+        }
+    }
+
+    cache_lock.unlock();
 
     return result;
 }
