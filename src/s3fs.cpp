@@ -25,6 +25,10 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <getopt.h>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <unistd.h>
 #include <list>
 
 #include "common.h"
@@ -66,6 +70,13 @@ enum dirtype {
     DIRTYPE_NOOBJ = 3,
 };
 
+struct moss_cache {
+    unsigned len;
+    unsigned size;
+    char* contents;
+    struct timespec time;
+};
+
 //-------------------------------------------------------------------
 // Static variables
 //-------------------------------------------------------------------
@@ -101,7 +112,7 @@ static bool use_wtf8              = false;
 static off_t fake_diskfree_size   = -1; // default is not set(-1)
 static int max_thread_count       = 5;  // default is 5
 static bool update_parent_dir_stat= true;   // default support updating parent directory stats
-static std::list<xmlDocPtr> myCache;
+
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -125,16 +136,21 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
 static int directory_empty(const char* path);
 static int rename_large_object(const char* from, const char* to);
 static int create_file_object(const char* path, mode_t mode, uid_t uid, gid_t gid);
-static int create_directory_object(const char* path, mode_t mode, const struct timespec& ts_atime, const struct timespec& ts_mtime, const struct timespec& ts_ctime, uid_t uid, gid_t gid);
+static int create_directory_object(const char* path, mode_t mode, const struct timespec& ts_atime, const struct timespec& ts_mtime, const struct timespec& ts_ctime, uid_t uid, gid_t gid, const char* pxattrvalue);
 static int rename_object(const char* from, const char* to, bool update_ctime);
 static int rename_object_nocopy(const char* from, const char* to, bool update_ctime);
-static int clone_directory_object(const char* from, const char* to, bool update_ctime);
+static int clone_directory_object(const char* from, const char* to, bool update_ctime, const char* pxattrvalue);
 static int rename_directory(const char* from, const char* to);
 static int update_mctime_parent_directory(const char* _path);
 static int remote_mountpath_exists(const char* path);
+static bool get_meta_xattr_value(const char* path, std::string& rawvalue);
+static bool get_parent_meta_xattr_value(const char* path, std::string& rawvalue);
+static bool get_xattr_posix_key_value(const char* path, std::string& xattrvalue, bool default_key);
+static bool build_inherited_xattr_value(const char* path, std::string& xattrvalue);
 static void free_xattrs(xattrs_t& xattrs);
 static bool parse_xattr_keyval(const std::string& xattrpair, std::string& key, PXATTRVAL& pval);
 static size_t parse_xattrs(const std::string& strxattrs, xattrs_t& xattrs);
+static std::string raw_build_xattrs(const xattrs_t& xattrs);
 static std::string build_xattrs(const xattrs_t& xattrs);
 static int s3fs_check_service();
 static bool set_mountpoint_attribute(struct stat& mpst);
@@ -535,11 +551,32 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
         }
     }
 
+    // set headers for mount point from default stat
+    if(is_mountpoint){
+        if(0 != result){
+            has_mp_stat = false;
+
+            // [NOTE]
+            // If mount point and no stat information file, create header
+            // information from the default stat.
+            //
+            (*pheader)["Content-Type"]     = S3fsCurl::LookupMimeType(strpath);
+            (*pheader)["x-amz-meta-uid"]   = str(pstat->st_uid);
+            (*pheader)["x-amz-meta-gid"]   = str(pstat->st_gid);
+            (*pheader)["x-amz-meta-mode"]  = str(pstat->st_mode);
+            (*pheader)["x-amz-meta-atime"] = str(pstat->st_atime);
+            (*pheader)["x-amz-meta-ctime"] = str(pstat->st_ctime);
+            (*pheader)["x-amz-meta-mtime"] = str(pstat->st_mtime);
+
+            result = 0;
+        }else{
+            has_mp_stat = true;
+        }
+    }
+
     // [NOTE]
     // If the file is listed but not allowed access, put it in
     // the positive cache instead of the negative cache.
-    //
-    // When mount points, the following error does not occur.
     //
     if(0 != result && -EPERM != result){
         // finally, "path" object did not find. Add no object cache.
@@ -1039,6 +1076,12 @@ static int s3fs_create(const char* _path, mode_t mode, struct fuse_file_info* fi
     meta["x-amz-meta-mtime"] = strnow;
     meta["x-amz-meta-ctime"] = strnow;
 
+    std::string xattrvalue;
+    if(build_inherited_xattr_value(path, xattrvalue)){
+        S3FS_PRN_DBG("Set xattrs = %s", urlDecode(xattrvalue).c_str());
+        meta["x-amz-meta-xattr"] = xattrvalue;
+    }
+
     // [NOTE] set no_truncate flag
     // At this point, the file has not been created(uploaded) and
     // the data is only present in the Stats cache.
@@ -1065,7 +1108,7 @@ static int s3fs_create(const char* _path, mode_t mode, struct fuse_file_info* fi
     return 0;
 }
 
-static int create_directory_object(const char* path, mode_t mode, const struct timespec& ts_atime, const struct timespec& ts_mtime, const struct timespec& ts_ctime, uid_t uid, gid_t gid)
+static int create_directory_object(const char* path, mode_t mode, const struct timespec& ts_atime, const struct timespec& ts_mtime, const struct timespec& ts_ctime, uid_t uid, gid_t gid, const char* pxattrvalue)
 {
     S3FS_PRN_INFO1("[path=%s][mode=%04o][atime=%s][mtime=%s][ctime=%s][uid=%u][gid=%u]", path, mode, str(ts_atime).c_str(), str(ts_mtime).c_str(), str(ts_ctime).c_str(), (unsigned int)uid, (unsigned int)gid);
 
@@ -1086,6 +1129,11 @@ static int create_directory_object(const char* path, mode_t mode, const struct t
     meta["x-amz-meta-atime"] = str(ts_atime);
     meta["x-amz-meta-mtime"] = str(ts_mtime);
     meta["x-amz-meta-ctime"] = str(ts_ctime);
+
+    if(pxattrvalue){
+        S3FS_PRN_DBG("Set xattrs = %s", urlDecode(std::string(pxattrvalue)).c_str());
+        meta["x-amz-meta-xattr"] = std::string(pxattrvalue);
+    }
 
     S3fsCurl s3fscurl;
     return s3fscurl.PutRequest(tpath.c_str(), meta, -1);    // fd=-1 means for creating zero byte object.
@@ -1114,9 +1162,17 @@ static int s3fs_mkdir(const char* _path, mode_t mode)
         return result;
     }
 
+    std::string xattrvalue;
+    const char* pxattrvalue;
+    if(get_parent_meta_xattr_value(path, xattrvalue)){
+        pxattrvalue = xattrvalue.c_str();
+    }else{
+        pxattrvalue = NULL;
+    }
+
     struct timespec now;
     s3fs_realtime(now);
-    result = create_directory_object(path, mode, now, now, now, pcxt->uid, pcxt->gid);
+    result = create_directory_object(path, mode, now, now, now, pcxt->uid, pcxt->gid, pxattrvalue);
 
     StatCache::getStatCacheData()->DelStat(path);
 
@@ -1269,6 +1325,9 @@ static int s3fs_symlink(const char* _from, const char* _to)
     headers["x-amz-meta-uid"]   = str(pcxt->uid);
     headers["x-amz-meta-gid"]   = str(pcxt->gid);
 
+    // [NOTE]
+    // Symbolic links do not set xattrs.
+
     // open tmpfile
     std::string strFrom;
     {   // scope for AutoFdEntity
@@ -1332,7 +1391,6 @@ static int rename_object(const char* from, const char* to, bool update_ctime)
     if(0 != (result = get_object_attribute(from, &buf, &meta))){
         return result;
     }
-
     std::string strSourcePath        = (mount_prefix.empty() && 0 == strcmp("/", from)) ? "//" : from;
 
     if(update_ctime){
@@ -1341,6 +1399,12 @@ static int rename_object(const char* from, const char* to, bool update_ctime)
     meta["x-amz-copy-source"]        = urlEncode(service_path + S3fsCred::GetBucket() + get_realpath(strSourcePath.c_str()));
     meta["Content-Type"]             = S3fsCurl::LookupMimeType(std::string(to));
     meta["x-amz-metadata-directive"] = "REPLACE";
+
+    std::string xattrvalue;
+    if(get_meta_xattr_value(from, xattrvalue)){
+        S3FS_PRN_DBG("Set xattrs = %s", urlDecode(xattrvalue).c_str());
+        meta["x-amz-meta-xattr"] = xattrvalue;
+    }
 
     // [NOTE]
     // If it has a cache, open it first and leave it open until rename.
@@ -1483,7 +1547,7 @@ static int rename_large_object(const char* from, const char* to)
     return result;
 }
 
-static int clone_directory_object(const char* from, const char* to, bool update_ctime)
+static int clone_directory_object(const char* from, const char* to, bool update_ctime, const char* pxattrvalue)
 {
     int result = -1;
     struct stat stbuf;
@@ -1505,7 +1569,7 @@ static int clone_directory_object(const char* from, const char* to, bool update_
     }else{
         set_stat_to_timespec(stbuf, ST_TYPE_CTIME, ts_ctime);
     }
-    result = create_directory_object(to, stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid);
+    result = create_directory_object(to, stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue);
 
     StatCache::getStatCacheData()->DelStat(to);
 
@@ -1604,11 +1668,19 @@ static int rename_directory(const char* from, const char* to)
     // rename directory objects.
     for(mn_cur = mn_head; mn_cur; mn_cur = mn_cur->next){
         if(mn_cur->is_dir && mn_cur->old_path && '\0' != mn_cur->old_path[0]){
+            std::string xattrvalue;
+            const char* pxattrvalue;
+            if(get_meta_xattr_value(mn_cur->old_path, xattrvalue)){
+                pxattrvalue = xattrvalue.c_str();
+            }else{
+                pxattrvalue = NULL;
+            }
+
             // [NOTE]
             // The ctime is updated only for the top (from) directory.
             // Other than that, it will not be updated.
             //
-            if(0 != (result = clone_directory_object(mn_cur->old_path, mn_cur->new_path, (strfrom == mn_cur->old_path)))){
+            if(0 != (result = clone_directory_object(mn_cur->old_path, mn_cur->new_path, (strfrom == mn_cur->old_path), pxattrvalue))){
                 S3FS_PRN_ERR("clone_directory_object returned an error(%d)", result);
                 free_mvnodes(mn_head);
                 return result;
@@ -1758,6 +1830,13 @@ static int s3fs_chmod(const char* _path, mode_t mode)
     }
 
     if(S_ISDIR(stbuf.st_mode) && (IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(path))){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild directory object(except new type)
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -1777,7 +1856,7 @@ static int s3fs_chmod(const char* _path, mode_t mode)
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         s3fs_realtime(ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -1857,6 +1936,14 @@ static int s3fs_chmod_nocopy(const char* _path, mode_t mode)
     }
 
     if(S_ISDIR(stbuf.st_mode)){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
+
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild all directory object
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -1876,7 +1963,7 @@ static int s3fs_chmod_nocopy(const char* _path, mode_t mode)
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         s3fs_realtime(ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -1947,6 +2034,14 @@ static int s3fs_chown(const char* _path, uid_t uid, gid_t gid)
     }
 
     if(S_ISDIR(stbuf.st_mode) && (IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(path))){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
+
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild directory object(except new type)
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -1966,7 +2061,7 @@ static int s3fs_chown(const char* _path, uid_t uid, gid_t gid)
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         s3fs_realtime(ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, uid, gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, uid, gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -2053,6 +2148,14 @@ static int s3fs_chown_nocopy(const char* _path, uid_t uid, gid_t gid)
     }
 
     if(S_ISDIR(stbuf.st_mode)){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
+
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild all directory object
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -2072,7 +2175,7 @@ static int s3fs_chown_nocopy(const char* _path, uid_t uid, gid_t gid)
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         s3fs_realtime(ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, uid, gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, uid, gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -2174,6 +2277,13 @@ static int update_mctime_parent_directory(const char* _path)
     if(nocopyapi || IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(parentpath.c_str())){
         // Should rebuild directory object(except new type)
         // Need to remove old dir("dir" etc) and make new dir("dir/")
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
 
         // At first, remove directory old object
         if(!nowpath.empty()){
@@ -2186,7 +2296,7 @@ static int update_mctime_parent_directory(const char* _path)
         }
 
         // Make new directory object("dir/")
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -2259,6 +2369,14 @@ static int s3fs_utimens(const char* _path, const struct timespec ts[2])
     }
 
     if(S_ISDIR(stbuf.st_mode) && (IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(path))){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
+
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild directory object(except new type)
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -2271,7 +2389,7 @@ static int s3fs_utimens(const char* _path, const struct timespec ts[2])
         StatCache::getStatCacheData()->DelStat(nowcache);
 
         // Make new directory object("dir/")
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mtime, ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mtime, ctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -2383,6 +2501,14 @@ static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
     }
 
     if(S_ISDIR(stbuf.st_mode)){
+        std::string xattrvalue;
+        const char* pxattrvalue;
+        if(get_meta_xattr_value(path, xattrvalue)){
+            pxattrvalue = xattrvalue.c_str();
+        }else{
+            pxattrvalue = NULL;
+        }
+
         if(IS_REPLACEDIR(nDirType)){
             // Should rebuild all directory object
             // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -2395,7 +2521,7 @@ static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
         StatCache::getStatCacheData()->DelStat(nowcache);
 
         // Make new directory object("dir/")
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mtime, ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mtime, ctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
     }else{
@@ -3018,7 +3144,6 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
             continue;
         }
 
-
         // First check for directory, start checking "not SSE-C".
         // If checking failed, retry to check with "SSE-C" by retry callback func when SSE-C mode.
         S3fsCurl* s3fscurl = new S3fsCurl();
@@ -3101,9 +3226,49 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     return result;
 }
 
+static std::map<std::string, struct moss_cache*> cache_map;
+static std::mutex cache_lock;
+static std::list<std::string> cache_list;
+
 static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
+
+    S3FS_PRN_INFO("[path=%s] [offset=%ld]", path, offset);
+    std::string cache_key = path;
+    int* fuse = (int*)(buf + 40);
+    cache_key += *fuse;
+    std::map<std::string, struct moss_cache*>::iterator cache_it;
+    cache_lock.lock();
+    cache_it = cache_map.find(cache_key);
+    struct moss_cache* cache  = NULL;
+    if(cache_it != cache_map.end()) {
+        struct timespec cur_time = {0, 0};
+        clock_gettime(CLOCK_MONOTONIC, &cur_time);
+        if(cur_time.tv_sec - cache_it->second->time.tv_sec < 5) {
+            cache = cache_it->second;
+            unsigned* len = ( unsigned*)(buf + 68);
+            *len = cache->len;
+            unsigned* size = ( unsigned*)(buf + 72);
+            *size = cache->size;
+            char* cp_contents = (char*) malloc(cache->size);
+            memcpy(cp_contents, cache->contents, cache->size);
+            char ** contents_pointer = (char**) (buf+56);
+            if(*contents_pointer != NULL) {
+                free(*contents_pointer);
+            }
+
+            *contents_pointer = cp_contents;
+            cache_list.remove(cache_key);
+            cache_list.push_back(cache_key);
+        }
+    }
+
+    cache_lock.unlock();
+
+    if(cache != NULL) {
+        return 0;
+    }
     S3ObjList head;
     int result;
 
@@ -3136,12 +3301,40 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     }
     S3FS_MALLOCTRIM(0);
 
+    cache  = (struct moss_cache*) malloc(sizeof(struct moss_cache));
+    cache->len = *( unsigned*)(buf + 68);
+    cache->size = *( unsigned*)(buf + 72);
+    cache->contents = (char*) malloc(cache->size);
+    clock_gettime(CLOCK_MONOTONIC, &cache->time);
+    char ** contents_pointer = (char**) (buf+56);
+    memcpy(cache->contents, *contents_pointer, cache->size);
+
+    cache_lock.lock();
+    cache_it = cache_map.find(cache_key);
+    if(cache_it != cache_map.end()) {
+        free(cache_it->second->contents);
+        free(cache_it->second);
+    }
+    cache_map[cache_key] = cache;
+
+    if(cache_key.size() > 10) {
+        std::string remove_key = cache_list.front();
+        cache_list.pop_front();
+        cache_it =  cache_map.find(cache_key);
+        if(cache_it != cache_map.end()) {
+            cache_map.erase(cache_key);
+            free(cache_it->second->contents);
+            free(cache_it->second);
+        }
+    }
+
+    cache_lock.unlock();
+
     return result;
 }
 
 static int list_bucket(const char* path, S3ObjList& head, const char* delimiter, bool check_content_only)
 {
-    S3FS_PRN_INIT_INFO("[path=%s]",path);
     std::string s3_realpath;
     std::string query_delimiter;
     std::string query_prefix;
@@ -3150,7 +3343,6 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
     std::string next_marker;
     bool truncated = true;
     S3fsCurl  s3fscurl;
-    //libxml2库，xml文档的指针
     xmlDocPtr doc;
 
     S3FS_PRN_INFO1("[path=%s]", path);
@@ -3176,129 +3368,79 @@ static int list_bucket(const char* path, S3ObjList& head, const char* delimiter,
     }else{
         query_maxkey += "max-keys=" + str(max_keys_list_object);
     }
-    // 缓存doc
-    if (myCache.empty()){
-        S3FS_PRN_INIT_INFO("%s","empty");
-        while(truncated){
-            // append parameters to query in alphabetical order
-            std::string each_query;
-            if(!next_continuation_token.empty()){
-                each_query += "continuation-token=" + urlEncode(next_continuation_token) + "&";
-                next_continuation_token = "";
-            }
-            each_query += query_delimiter;
-            if(S3fsCurl::IsListObjectsV2()){
-                each_query += "list-type=2&";
-            }
-            if(!next_marker.empty()){
-                each_query += "marker=" + urlEncode(next_marker) + "&";
-                next_marker = "";
-            }
-            each_query += query_maxkey;
-            each_query += query_prefix;
 
-            // request
-            int result;
-            // 发送list_bucket请求
-            S3FS_PRN_INIT_INFO("%s","start ListBucketRequest");
-            if(0 != (result = s3fscurl.ListBucketRequest(path, each_query.c_str()))){
-                S3FS_PRN_ERR("ListBucketRequest returns with error.");
-                return result;
-            }
-            S3FS_PRN_INIT_INFO("%s","end ListBucketRequest");
-            BodyData* body = s3fscurl.GetBodyData();
-            // xmlDocPtr
-            // 解析XML，得到文件目录
-            if(NULL == (doc = xmlReadMemory(body->str(), static_cast<int>(body->size()), "", NULL, 0))){
-                S3FS_PRN_ERR("xmlReadMemory returns with error.");
-                return -EIO;
-            }
-            if(0 != append_objects_from_xml(path, doc, head)){
-                S3FS_PRN_ERR("append_objects_from_xml returns with error.");
-                xmlFreeDoc(doc);
-                return -EIO;
-            }
-            if(true == (truncated = is_truncated(doc))){
-                xmlChar* tmpch;
-                if(NULL != (tmpch = get_next_continuation_token(doc))){
-                    next_continuation_token = reinterpret_cast<char*>(tmpch);
-                    xmlFree(tmpch);
-                }else if(NULL != (tmpch = get_next_marker(doc))){
-                    next_marker = reinterpret_cast<char*>(tmpch);
-                    xmlFree(tmpch);
-                }
+    while(truncated){
+        // append parameters to query in alphabetical order
+        std::string each_query;
+        if(!next_continuation_token.empty()){
+            each_query += "continuation-token=" + urlEncode(next_continuation_token) + "&";
+            next_continuation_token = "";
+        }
+        each_query += query_delimiter;
+        if(S3fsCurl::IsListObjectsV2()){
+            each_query += "list-type=2&";
+        }
+        if(!next_marker.empty()){
+            each_query += "marker=" + urlEncode(next_marker) + "&";
+            next_marker = "";
+        }
+        each_query += query_maxkey;
+        each_query += query_prefix;
 
-                if(next_continuation_token.empty() && next_marker.empty()){
-                    // If did not specify "delimiter", s3 did not return "NextMarker".
-                    // On this case, can use last name for next marker.
-                    //
-                    std::string lastname;
-                    if(!head.GetLastName(lastname)){
-                        S3FS_PRN_WARN("Could not find next marker, thus break loop.");
-                        truncated = false;
-                    }else{
-                        next_marker = s3_realpath.substr(1);
-                        if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
-                            next_marker += "/";
-                        }
-                        next_marker += lastname;
+        // request
+        int result;
+        if(0 != (result = s3fscurl.ListBucketRequest(path, each_query.c_str()))){
+            S3FS_PRN_ERR("ListBucketRequest returns with error.");
+            return result;
+        }
+        BodyData* body = s3fscurl.GetBodyData();
+
+        // xmlDocPtr
+        if(NULL == (doc = xmlReadMemory(body->str(), static_cast<int>(body->size()), "", NULL, 0))){
+            S3FS_PRN_ERR("xmlReadMemory returns with error.");
+            return -EIO;
+        }
+        if(0 != append_objects_from_xml(path, doc, head)){
+            S3FS_PRN_ERR("append_objects_from_xml returns with error.");
+            xmlFreeDoc(doc);
+            return -EIO;
+        }
+        if(true == (truncated = is_truncated(doc))){
+            xmlChar* tmpch;
+            if(NULL != (tmpch = get_next_continuation_token(doc))){
+                next_continuation_token = reinterpret_cast<char*>(tmpch);
+                xmlFree(tmpch);
+            }else if(NULL != (tmpch = get_next_marker(doc))){
+                next_marker = reinterpret_cast<char*>(tmpch);
+                xmlFree(tmpch);
+            }
+
+            if(next_continuation_token.empty() && next_marker.empty()){
+                // If did not specify "delimiter", s3 did not return "NextMarker".
+                // On this case, can use last name for next marker.
+                //
+                std::string lastname;
+                if(!head.GetLastName(lastname)){
+                    S3FS_PRN_WARN("Could not find next marker, thus break loop.");
+                    truncated = false;
+                }else{
+                    next_marker = s3_realpath.substr(1);
+                    if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
+                        next_marker += "/";
                     }
+                    next_marker += lastname;
                 }
-            }
-            myCache.push_back(doc);
-            S3FS_XMLFREEDOC(doc);
-            // reset(initialize) curl object
-            s3fscurl.DestroyCurlHandle();
-            if(check_content_only){
-                break;
             }
         }
-    }else{
-        S3FS_PRN_INIT_INFO("%s","not empty");
-        S3FS_PRN_INIT_INFO("myCache size: %d",myCache.size());
-       for (std::list<xmlDocPtr>::iterator it = myCache.begin(); it != myCache.end(); ++it){
-            S3FS_PRN_INIT_INFO("iterate %s","not empty");
-            doc=*it;
-            S3FS_PRN_INIT_INFO("%s","doc get value");
-            if(0 != append_objects_from_xml(path, doc, head)){
-                S3FS_PRN_ERR("append_objects_from_xml returns with error.");
-                S3FS_PRN_INIT_INFO("%s","append_objects_from_xml returns with error.");
-                xmlFreeDoc(doc);
-                return -EIO;
-            }
-            if(true == (truncated = is_truncated(doc))){
-                S3FS_PRN_INIT_INFO("%s","is_truncated.");
-                xmlChar* tmpch;
-                if(NULL != (tmpch = get_next_continuation_token(doc))){
-                    S3FS_PRN_INIT_INFO("%s","get_next_continuation_token.");
-                    next_continuation_token = reinterpret_cast<char*>(tmpch);
-                    xmlFree(tmpch);
-                }else if(NULL != (tmpch = get_next_marker(doc))){
-                    S3FS_PRN_INIT_INFO("%s","get_next_marker.");
-                    next_marker = reinterpret_cast<char*>(tmpch);
-                    xmlFree(tmpch);
-                }
-                if(next_continuation_token.empty() && next_marker.empty()){
-                    S3FS_PRN_INIT_INFO("%s","next empty.");
-                    std::string lastname;
-                    if(!head.GetLastName(lastname)){
-                        S3FS_PRN_WARN("Could not find next marker, thus break loop.");
-                        truncated = false;
-                    }else{
-                        next_marker = s3_realpath.substr(1);
-                        if(s3_realpath.empty() || '/' != *s3_realpath.rbegin()){
-                            next_marker += "/";
-                        }
-                        next_marker += lastname;
-                    }
-                }
-            }
-            S3FS_XMLFREEDOC(doc);
+        S3FS_XMLFREEDOC(doc);
+
+        // reset(initialize) curl object
+        s3fscurl.DestroyCurlHandle();
+
+        if(check_content_only){
+            break;
         }
     }
-//    if (myCache.size()==1){
-        myCache.clear();
-//    }
     S3FS_MALLOCTRIM(0);
 
     return 0;
@@ -3321,6 +3463,123 @@ static int remote_mountpath_exists(const char* path)
     return 0;
 }
 
+static bool get_meta_xattr_value(const char* path, std::string& rawvalue)
+{
+    if(!path || '\0' == path[0]){
+        S3FS_PRN_ERR("path is empty.");
+        return false;
+    }
+    S3FS_PRN_DBG("[path=%s]", path);
+
+    rawvalue.erase();
+
+    headers_t meta;
+    if(0 != get_object_attribute(path, NULL, &meta)){
+        S3FS_PRN_ERR("Failed to get object(%s) headers", path);
+        return false;
+    }
+
+    headers_t::const_iterator iter;
+    if(meta.end() == (iter = meta.find("x-amz-meta-xattr"))){
+        return false;
+    }
+    rawvalue = iter->second;
+    return true;
+}
+
+static bool get_parent_meta_xattr_value(const char* path, std::string& rawvalue)
+{
+    if(0 == strcmp(path, "/") || 0 == strcmp(path, ".")){
+        // path is mount point, thus does not have parent.
+        return false;
+    }
+
+    std::string parent = mydirname(path);
+    if(parent.empty()){
+        S3FS_PRN_ERR("Could not get parent path for %s.", path);
+        return false;
+    }
+    return get_meta_xattr_value(parent.c_str(), rawvalue);
+}
+
+static bool get_xattr_posix_key_value(const char* path, std::string& xattrvalue, bool default_key)
+{
+    xattrvalue.erase();
+
+    std::string rawvalue;
+    if(!get_meta_xattr_value(path, rawvalue)){
+        return false;
+    }
+
+    xattrs_t xattrs;
+    if(0 == parse_xattrs(rawvalue, xattrs)){
+        return false;
+    }
+
+    std::string targetkey;
+    if(default_key){
+        targetkey = "system.posix_acl_default";
+    }else{
+        targetkey = "system.posix_acl_access";
+    }
+
+    xattrs_t::iterator iter;
+    if(xattrs.end() == (iter = xattrs.find(targetkey)) || !(iter->second)){
+        free_xattrs(xattrs);
+        return false;
+    }
+
+    // convert value by base64
+    char* base64val = s3fs_base64((iter->second)->pvalue, (iter->second)->length);
+    if(!base64val){
+        free_xattrs(xattrs);
+        return false;
+    }
+    free_xattrs(xattrs);
+
+    xattrvalue = base64val;
+    delete[] base64val;
+
+    return true;
+}
+
+// [NOTE]
+// Converts and returns the POSIX ACL default(system.posix_acl_default) value of
+// the parent directory as a POSIX ACL(system.posix_acl_access) value.
+// Returns false if the parent directory has no POSIX ACL defaults.
+//
+static bool build_inherited_xattr_value(const char* path, std::string& xattrvalue)
+{
+    S3FS_PRN_DBG("[path=%s]", path);
+
+    xattrvalue.erase();
+
+    if(0 == strcmp(path, "/") || 0 == strcmp(path, ".")){
+        // path is mount point, thus does not have parent.
+        return false;
+    }
+
+    std::string parent = mydirname(path);
+    if(parent.empty()){
+        S3FS_PRN_ERR("Could not get parent path for %s.", path);
+        return false;
+    }
+
+    // get parent's "system.posix_acl_default" value(base64'd).
+    std::string parent_default_value;
+    if(!get_xattr_posix_key_value(parent.c_str(), parent_default_value, true)){
+        return false;
+    }
+
+    // build "system.posix_acl_access" from parent's default value
+    std::string raw_xattr_value;
+    raw_xattr_value  = "{\"system.posix_acl_access\":\"";
+    raw_xattr_value += parent_default_value;
+    raw_xattr_value += "\"}";
+
+    xattrvalue = urlEncode(raw_xattr_value);
+    return true;
+}
 
 static void free_xattrs(xattrs_t& xattrs)
 {
@@ -3390,16 +3649,16 @@ static size_t parse_xattrs(const std::string& strxattrs, xattrs_t& xattrs)
     return xattrs.size();
 }
 
-static std::string build_xattrs(const xattrs_t& xattrs)
+static std::string raw_build_xattrs(const xattrs_t& xattrs)
 {
-    std::string strxattrs("{");
-
-    bool is_set = false;
+    std::string strxattrs;
+    bool        is_set = false;
     for(xattrs_t::const_iterator iter = xattrs.begin(); iter != xattrs.end(); ++iter){
         if(is_set){
             strxattrs += ',';
         }else{
-            is_set = true;
+            is_set    = true;
+            strxattrs = "{";
         }
         strxattrs += '\"';
         strxattrs += iter->first;
@@ -3414,8 +3673,18 @@ static std::string build_xattrs(const xattrs_t& xattrs)
         }
         strxattrs += '\"';
     }
-    strxattrs += '}';
+    if(is_set){
+        strxattrs += "}";
+    }
+    return strxattrs;
+}
 
+static std::string build_xattrs(const xattrs_t& xattrs)
+{
+    std::string strxattrs = raw_build_xattrs(xattrs);
+    if(strxattrs.empty()){
+        strxattrs = "{}";
+    }
     strxattrs = urlEncode(strxattrs);
 
     return strxattrs;
@@ -3466,6 +3735,8 @@ static int set_xattrs_to_header(headers_t& meta, const char* name, const char* v
 
     // build new strxattrs(not encoded) and set it to headers_t
     meta["x-amz-meta-xattr"] = build_xattrs(xattrs);
+
+    S3FS_PRN_DBG("Set xattrs(after adding %s key) = %s", name, raw_build_xattrs(xattrs).c_str());
 
     free_xattrs(xattrs);
 
@@ -3538,7 +3809,7 @@ static int s3fs_setxattr(const char* path, const char* name, const char* value, 
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         set_stat_to_timespec(stbuf, ST_TYPE_CTIME, ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid, NULL))){
             return result;
         }
 
@@ -3648,6 +3919,8 @@ static int s3fs_getxattr(const char* path, const char* name, char* value, size_t
 
     parse_xattrs(strxattrs, xattrs);
 
+    S3FS_PRN_DBG("Get xattrs = %s", raw_build_xattrs(xattrs).c_str());
+
     // search name
     std::string strname = name;
     xattrs_t::iterator xiter = xattrs.find(strname);
@@ -3711,6 +3984,8 @@ static int s3fs_listxattr(const char* path, char* list, size_t size)
     std::string strxattrs = iter->second;
 
     parse_xattrs(strxattrs, xattrs);
+
+    S3FS_PRN_DBG("Get xattrs = %s", raw_build_xattrs(xattrs).c_str());
 
     // calculate total name length
     size_t total = 0;
@@ -3809,6 +4084,8 @@ static int s3fs_removexattr(const char* path, const char* name)
     delete xiter->second;
     xattrs.erase(xiter);
 
+    S3FS_PRN_DBG("Reset xattrs(after delete %s key) = %s", name, raw_build_xattrs(xattrs).c_str());
+
     if(S_ISDIR(stbuf.st_mode) && IS_REPLACEDIR(nDirType)){
         // Should rebuild directory object(except new type)
         // Need to remove old dir("dir" etc) and make new dir("dir/")
@@ -3827,7 +4104,7 @@ static int s3fs_removexattr(const char* path, const char* name)
         set_stat_to_timespec(stbuf, ST_TYPE_MTIME, ts_mtime);
         set_stat_to_timespec(stbuf, ST_TYPE_CTIME, ts_ctime);
 
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid))){
+        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, ts_atime, ts_mtime, ts_ctime, stbuf.st_uid, stbuf.st_gid, NULL))){
             free_xattrs(xattrs);
             return result;
         }
@@ -3903,7 +4180,7 @@ static void s3fs_exit_fuseloop(int exit_status)
 
 static void* s3fs_init(struct fuse_conn_info* conn)
 {
-    S3FS_PRN_INIT_INFO("init v%s(commit:%s) with %s", VERSION, COMMIT_HASH_VAL, s3fs_crypt_lib_name());
+    S3FS_PRN_INIT_INFO("init v%s(commit:%s) with %s, credential-library(%s)", VERSION, COMMIT_HASH_VAL, s3fs_crypt_lib_name(), ps3fscred->GetCredFuncVersion(false));
 
     // cache(remove cache dirs at first)
     if(is_remove_cache && (!CacheFileStat::DeleteCacheFileStatDirectory() || !FdManager::DeleteCacheDirectory())){
@@ -4954,13 +5231,10 @@ int main(int argc, char* argv[])
 
     // set credential object
     //
-    // This local variable is the only credential object.
-    // It is also set in the S3fsCurl class and this object is used.
-    //
-    S3fsCred s3fscredObj;
-    ps3fscred = &s3fscredObj;
-    if(!S3fsCurl::InitCredentialObject(&s3fscredObj)){
+    ps3fscred = new S3fsCred();
+    if(!S3fsCurl::InitCredentialObject(ps3fscred)){
         S3FS_PRN_EXIT("Failed to setup credential object to s3fs curl.");
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -4969,11 +5243,13 @@ int main(int argc, char* argv[])
             case 0:
                 if(strcmp(long_opts[option_index].name, "version") == 0){
                     show_version();
+                    delete ps3fscred;
                     exit(EXIT_SUCCESS);
                 }
                 break;
             case 'h':
                 show_help();
+                delete ps3fscred;
                 exit(EXIT_SUCCESS);
             case 'o':
                 break;
@@ -4987,6 +5263,7 @@ int main(int argc, char* argv[])
             case 'u':   // --incomplete-mpu-list
                 if(NO_UTILITY_MODE != utility_mode){
                     S3FS_PRN_EXIT("already utility mode option is specified.");
+                    delete ps3fscred;
                     exit(EXIT_FAILURE);
                 }
                 utility_mode = INCOMP_TYPE_LIST;
@@ -4994,6 +5271,7 @@ int main(int argc, char* argv[])
             case 'a':   // --incomplete-mpu-abort
                 if(NO_UTILITY_MODE != utility_mode){
                     S3FS_PRN_EXIT("already utility mode option is specified.");
+                    delete ps3fscred;
                     exit(EXIT_FAILURE);
                 }
                 utility_mode = INCOMP_TYPE_ABORT;
@@ -5004,12 +5282,14 @@ int main(int argc, char* argv[])
                 }else if(NULL != optarg){
                     if(!convert_unixtime_from_option_arg(optarg, incomp_abort_time)){
                         S3FS_PRN_EXIT("--incomplete-mpu-abort option argument is wrong.");
+                        delete ps3fscred;
                         exit(EXIT_FAILURE);
                     }
                 }
                 // if optarg is null, incomp_abort_time is 24H(default)
                 break;
             default:
+                delete ps3fscred;
                 exit(EXIT_FAILURE);
         }
     }
@@ -5019,12 +5299,14 @@ int main(int argc, char* argv[])
     // Load SSE environment
     if(!S3fsCurl::LoadEnvSse()){
         S3FS_PRN_EXIT("something wrong about SSE environment.");
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
     // ssl init
     if(!s3fs_init_global_ssl()){
         S3FS_PRN_EXIT("could not initialize for ssl libraries.");
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5032,6 +5314,7 @@ int main(int argc, char* argv[])
     if(!init_parser_xml_lock()){
         S3FS_PRN_EXIT("could not initialize mutex for xml parser.");
         s3fs_destroy_global_ssl();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5064,6 +5347,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5079,6 +5363,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5096,6 +5381,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
     if(!S3fsCurl::FinalCheckSse()){
@@ -5104,6 +5390,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5124,6 +5411,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5139,6 +5427,7 @@ int main(int argc, char* argv[])
             s3fs_destroy_global_ssl();
             destroy_parser_xml_lock();
             destroy_basename_lock();
+            delete ps3fscred;
             exit(EXIT_FAILURE);
         }
     }
@@ -5150,6 +5439,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5160,6 +5450,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5191,7 +5482,11 @@ int main(int argc, char* argv[])
             found = s3host.find("https:");
             if(found != std::string::npos){
                 S3FS_PRN_EXIT("Using https and a bucket name with periods is unsupported.");
-                exit(1);
+                S3fsCurl::DestroyS3fsCurl();
+                s3fs_destroy_global_ssl();
+                destroy_parser_xml_lock();
+                delete ps3fscred;
+                exit(EXIT_FAILURE);
             }
         }
     }
@@ -5204,6 +5499,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(exitcode);
     }
 
@@ -5229,6 +5525,7 @@ int main(int argc, char* argv[])
         s3fs_destroy_global_ssl();
         destroy_parser_xml_lock();
         destroy_basename_lock();
+        delete ps3fscred;
         exit(EXIT_FAILURE);
     }
 
@@ -5290,6 +5587,7 @@ int main(int argc, char* argv[])
     s3fs_destroy_global_ssl();
     destroy_parser_xml_lock();
     destroy_basename_lock();
+    delete ps3fscred;
 
     // cleanup xml2
     xmlCleanupParser();

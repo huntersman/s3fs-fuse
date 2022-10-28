@@ -34,7 +34,7 @@ AC_CHECK_HEADERS([attr/xattr.h])
 AC_CHECK_HEADERS([sys/extattr.h])
 AC_CHECK_FUNCS([fallocate])
 
-CXXFLAGS="$CXXFLAGS -Wall -fno-exceptions -D_FILE_OFFSET_BITS=64 -D_FORTIFY_SOURCE=2"
+CXXFLAGS="$CXXFLAGS -Wall -fno-exceptions -D_FILE_OFFSET_BITS=64 -D_FORTIFY_SOURCE=2 -std=c++11"
 
 dnl ----------------------------------------------
 dnl For macOS
@@ -309,6 +309,11 @@ AC_COMPILE_IFELSE(
    AC_MSG_RESULT(no)
   ]
 )
+
+dnl ----------------------------------------------
+dnl dl library
+dnl ----------------------------------------------
+AC_CHECK_LIB([dl], [dlopen, dlclose, dlerror, dlsym], [], [AC_MSG_ERROR([Could not found dlopen, dlclose, dlerror and dlsym])])
 
 dnl ----------------------------------------------
 dnl build date

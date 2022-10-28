@@ -54,7 +54,6 @@ Makefile
 Makefile.in
 test-driver
 compile
-missing
 
 #
 # man page
@@ -104,3 +103,5 @@ bin/
 # vim600: noet sw=4 ts=4 fdm=marker
 # vim<600: noet sw=4 ts=4
 #
+.idea/*
+.vscode/*
