@@ -898,7 +898,7 @@ int put_headers(const char* path, headers_t& meta, bool is_copy, bool use_st_siz
     }
     return 0;
 }
-
+//获取attribute
 static int s3fs_getattr(const char* _path, struct stat* stbuf)
 {
     WTF8_ENCODE(path)
@@ -2970,6 +2970,7 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
     return 0;
 }
 
+//打开文件夹
 static int s3fs_opendir(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
@@ -3230,10 +3231,17 @@ static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
 static std::list<std::string> cache_list;
 
+/// @brief 读取文件夹内容
+/// @param _path 文件夹路径
+/// @param buf 
+/// @param filler fuse.h 在readdir操作中添加entry
+/// @param offset 偏移量，文件系统用其在文件流中识别当前节点
+/// @param fi fuse.h Information about an open file.
+/// @return
 static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
-
+    // 以下是缓存部分
     S3FS_PRN_INFO("[path=%s] [offset=%ld]", path, offset);
     std::string cache_key = path;
     int* fuse = (int*)(buf + 40);
@@ -3247,15 +3255,15 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
         clock_gettime(CLOCK_MONOTONIC, &cur_time);
         if(cur_time.tv_sec - cache_it->second->time.tv_sec < 5) {
             cache = cache_it->second;
-            unsigned* len = ( unsigned*)(buf + 68);
+            unsigned* len = (unsigned*)(buf + 68);
             *len = cache->len;
-            unsigned* size = ( unsigned*)(buf + 72);
+            unsigned* size = (unsigned*)(buf + 72);
             *size = cache->size;
             char* cp_contents = (char*) malloc(cache->size);
             memcpy(cp_contents, cache->contents, cache->size);
             char ** contents_pointer = (char**) (buf+56);
             if(*contents_pointer != NULL) {
-                free(*contents_pointer);
+            free(*contents_pointer);
             }
 
             *contents_pointer = cp_contents;
@@ -3269,6 +3277,8 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     if(cache != NULL) {
         return 0;
     }
+    // *******
+    
     S3ObjList head;
     int result;
 
@@ -3285,6 +3295,16 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     }
 
     // force to add "." and ".." name.
+    /** 
+     *  Fuse.h 2.9.6
+     *  Function to add an entry in a readdir() operation
+     *
+     * @param buf the buffer passed to the readdir() operation
+     * @param name the file name of the directory entry
+     * @param stat file attributes, can be NULL
+     * @param off offset of the next entry or zero
+     * @return 1 if buffer is full, zero otherwise
+     */
     filler(buf, ".", 0, 0);
     filler(buf, "..", 0, 0);
     if(head.IsEmpty()){
@@ -3301,6 +3321,7 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     }
     S3FS_MALLOCTRIM(0);
 
+     // 以下是缓存部分
     cache  = (struct moss_cache*) malloc(sizeof(struct moss_cache));
     cache->len = *( unsigned*)(buf + 68);
     cache->size = *( unsigned*)(buf + 72);
@@ -3329,7 +3350,7 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     }
 
     cache_lock.unlock();
-
+    // ****
     return result;
 }
 
