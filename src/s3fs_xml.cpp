@@ -429,22 +429,16 @@ int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
     std::string ex_cprefix  = "//";
     std::string ex_prefix;
     std::string ex_etag;
-
     if(!doc){
         return -1;
     }
-    S3FS_PRN_INIT_INFO("[path=%s]","1");
     // If there is not <Prefix>, use path instead of it.
     xmlChar* pprefix = get_prefix(doc);
-    S3FS_PRN_INIT_INFO("[path=%s]",pprefix);
     std::string prefix  = (pprefix ? reinterpret_cast<char*>(pprefix) : path ? path : "");
-    S3FS_PRN_INIT_INFO("[path=%s]","1.2");
     if(pprefix){
         xmlFree(pprefix);
     }
-    S3FS_PRN_INIT_INFO("[path=%s]","1.3");
     xmlXPathContextPtr ctx = xmlXPathNewContext(doc);
-    S3FS_PRN_INIT_INFO("[path=%s]","2");
     if(!noxmlns && GetXmlNsUrl(doc, xmlnsurl)){
         xmlXPathRegisterNs(ctx, reinterpret_cast<const xmlChar*>("s3"), reinterpret_cast<const xmlChar*>(xmlnsurl.c_str()));
         ex_contents+= "s3:";
@@ -467,7 +461,6 @@ int append_objects_from_xml(const char* path, xmlDocPtr doc, S3ObjList& head)
         return -1;
     }
     S3FS_XMLXPATHFREECONTEXT(ctx);
-    S3FS_PRN_INIT_INFO("[%s]","success");
     return 0;
 }
 
