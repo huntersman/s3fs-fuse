@@ -551,29 +551,6 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
         }
     }
 
-    // set headers for mount point from default stat
-    if(is_mountpoint){
-        if(0 != result){
-            has_mp_stat = false;
-
-            // [NOTE]
-            // If mount point and no stat information file, create header
-            // information from the default stat.
-            //
-            (*pheader)["Content-Type"]     = S3fsCurl::LookupMimeType(strpath);
-            (*pheader)["x-amz-meta-uid"]   = str(pstat->st_uid);
-            (*pheader)["x-amz-meta-gid"]   = str(pstat->st_gid);
-            (*pheader)["x-amz-meta-mode"]  = str(pstat->st_mode);
-            (*pheader)["x-amz-meta-atime"] = str(pstat->st_atime);
-            (*pheader)["x-amz-meta-ctime"] = str(pstat->st_ctime);
-            (*pheader)["x-amz-meta-mtime"] = str(pstat->st_mtime);
-
-            result = 0;
-        }else{
-            has_mp_stat = true;
-        }
-    }
-
     // [NOTE]
     // If the file is listed but not allowed access, put it in
     // the positive cache instead of the negative cache.
@@ -941,7 +918,7 @@ static int s3fs_readlink(const char* _path, char* buf, size_t size)
     }
     WTF8_ENCODE(path)
     std::string strValue;
-
+    S3FS_PRN_INFO("[path=%s]", path);
     // check symbolic link cache
     if(!StatCache::getStatCacheData()->GetSymlink(std::string(path), strValue)){
         // not found in cache, then open the path
@@ -1047,7 +1024,7 @@ static int s3fs_create(const char* _path, mode_t mode, struct fuse_file_info* fi
     int result;
     struct fuse_context* pcxt;
 
-    S3FS_PRN_INFO("[path=%s][mode=%04o][flags=0x%x]", path, mode, fi->flags);
+    S3FS_PRN_INFO("[path=%s][mode=%04o][flags=0x%x]", _path, mode, fi->flags);
 
     if(NULL == (pcxt = fuse_get_context())){
         return -EIO;
@@ -1138,7 +1115,7 @@ static int create_directory_object(const char* path, mode_t mode, const struct t
     S3fsCurl s3fscurl;
     return s3fscurl.PutRequest(tpath.c_str(), meta, -1);    // fd=-1 means for creating zero byte object.
 }
-
+//创目录
 static int s3fs_mkdir(const char* _path, mode_t mode)
 {
     WTF8_ENCODE(path)
@@ -2227,7 +2204,7 @@ static int update_mctime_parent_directory(const char* _path)
         S3FS_PRN_DBG("Updating parent directory stats is disabled");
         return 0;
     }
-
+    
     WTF8_ENCODE(path)
     int             result;
     std::string     parentpath;     // parent directory path
@@ -2241,6 +2218,7 @@ static int update_mctime_parent_directory(const char* _path)
     dirtype         nDirType = DIRTYPE_UNKNOWN;
 
     S3FS_PRN_INFO2("[path=%s]", path);
+    // clearn readdir cache
 
     // get parent directory path
     parentpath = mydirname(path);
@@ -2807,6 +2785,7 @@ static int s3fs_write(const char* _path, const char* buf, size_t size, off_t off
 static int s3fs_statfs(const char* _path, struct statvfs* stbuf)
 {
     // WTF8_ENCODE(path)
+    S3FS_PRN_INFO("[path=%s]", _path);
     stbuf->f_bsize  = 16 * 1024 * 1024;
     stbuf->f_namemax = NAME_MAX;
 #if defined(__MSYS__)
@@ -2911,7 +2890,7 @@ static int s3fs_fsync(const char* _path, int datasync, struct fuse_file_info* fi
 static int s3fs_release(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
-    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
+    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", _path, (unsigned long long)(fi->fh));
 
     // [NOTE]
     // All opened file's stats is cached with no truncate flag.
@@ -2977,7 +2956,7 @@ static int s3fs_opendir(const char* _path, struct fuse_file_info* fi)
     int result;
     int mask = (O_RDONLY != (fi->flags & O_ACCMODE) ? W_OK : R_OK);
 
-    S3FS_PRN_INFO("[path=%s][flags=0x%x]", path, fi->flags);
+    S3FS_PRN_INFO("[path=%s][flags=0x%x]", _path, fi->flags);
 
     if(0 == (result = check_object_access(path, mask, NULL))){
         result = check_parent_object_access(path, X_OK);
@@ -3089,6 +3068,12 @@ static S3fsCurl* multi_head_retry_callback(S3fsCurl* s3fscurl)
     return newcurl;
 }
 
+/// @brief multi head request for stats caching
+/// @param path 路径
+/// @param head 
+/// @param buf 
+/// @param filler fuse.h 在readdir操作中添加entry
+/// @return 
 static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf, fuse_fill_dir_t filler)
 {
     S3fsMultiCurl curlmulti(S3fsCurl::GetMaxMultiRequest());
@@ -3231,6 +3216,10 @@ static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
 static std::list<std::string> cache_list;
 
+static moss_cache* createCache(const char* _path){
+    return NULL;
+}
+
 /// @brief 读取文件夹内容
 /// @param _path 文件夹路径
 /// @param buf 
@@ -3241,59 +3230,52 @@ static std::list<std::string> cache_list;
 static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
-    // 以下是缓存部分
-    S3FS_PRN_INFO("[path=%s] [offset=%ld]", path, offset);
-    std::string cache_key = path;
-    int* fuse = (int*)(buf + 40);
-    cache_key += *fuse;
-    std::map<std::string, struct moss_cache*>::iterator cache_it;
-    cache_lock.lock();
-    cache_it = cache_map.find(cache_key);
-    struct moss_cache* cache  = NULL;
-    if(cache_it != cache_map.end()) {
-        struct timespec cur_time = {0, 0};
-        clock_gettime(CLOCK_MONOTONIC, &cur_time);
-        if(cur_time.tv_sec - cache_it->second->time.tv_sec < 5) {
-            cache = cache_it->second;
-            unsigned* len = (unsigned*)(buf + 68);
-            *len = cache->len;
-            unsigned* size = (unsigned*)(buf + 72);
-            *size = cache->size;
-            char* cp_contents = (char*) malloc(cache->size);
-            memcpy(cp_contents, cache->contents, cache->size);
-            char ** contents_pointer = (char**) (buf+56);
-            if(*contents_pointer != NULL) {
-            free(*contents_pointer);
-            }
+    S3FS_PRN_INFO("[path=%s] [offset=%ld] [buf=%d]", path, offset, *(int*)buf);
+    // std::string cache_key = path;
+    // int* fuse = (int*)(buf + 40);
+    // cache_key += *fuse;
+    // std::map<std::string, struct moss_cache*>::iterator cache_it;
 
-            *contents_pointer = cp_contents;
-            cache_list.remove(cache_key);
-            cache_list.push_back(cache_key);
-        }
-    }
+    // cache_lock.lock();
+    // cache_it = cache_map.find(cache_key);
+    // struct moss_cache* cache  = NULL;
+    // if(cache_it != cache_map.end()) {
+    //     struct timespec cur_time = {0, 0};
+    //     clock_gettime(CLOCK_MONOTONIC, &cur_time);
+    //     if(cur_time.tv_sec - cache_it->second->time.tv_sec < 60) {
+    //         cache = cache_it->second;
+    //         unsigned* len = (unsigned*)(buf + 68);
+    //         *len = cache->len;
+    //         unsigned* size = (unsigned*)(buf + 72);
+    //         *size = cache->size;
+    //         char* cp_contents = (char*) malloc(cache->size);
+    //         memcpy(cp_contents, cache->contents, cache->size);
+    //         char ** contents_pointer = (char**) (buf+56);
+    //         if(*contents_pointer != NULL) {
+    //             free(*contents_pointer);
+    //         }
+    //         *contents_pointer = cp_contents;
+    //         cache_list.remove(cache_key);
+    //         cache_list.push_back(cache_key);
+    //     }
+    // }
+    // cache_lock.unlock();
 
-    cache_lock.unlock();
-
-    if(cache != NULL) {
-        return 0;
-    }
-    // *******
+    // if(cache != NULL) {
+    //     S3FS_PRN_INFO("%s", "使用缓存");
+    //     S3FS_PRN_INFO("缓存大小：%d B", cache->size);
+    //     return 0;
+    // }
     
     S3ObjList head;
     int result;
-
-    S3FS_PRN_INFO("[path=%s]", path);
-
     if(0 != (result = check_object_access(path, R_OK, NULL))){
         return result;
     }
-
-    // get a list of all the objects
     if((result = list_bucket(path, head, "/")) != 0){
         S3FS_PRN_ERR("list_bucket returns error(%d).", result);
         return result;
     }
-
     // force to add "." and ".." name.
     /** 
      *  Fuse.h 2.9.6
@@ -3310,7 +3292,6 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     if(head.IsEmpty()){
         return 0;
     }
-
     // Send multi head request for stats caching.
     std::string strpath = path;
     if(strcmp(path, "/") != 0){
@@ -3319,38 +3300,35 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     if(0 != (result = readdir_multi_head(strpath.c_str(), head, buf, filler))){
         S3FS_PRN_ERR("readdir_multi_head returns error(%d).", result);
     }
+
+    // cache  = (struct moss_cache*) malloc(sizeof(struct moss_cache));
+    // cache->len = *(unsigned*)(buf + 68);
+    // cache->size = *(unsigned*)(buf + 72);
+    // cache->contents = (char*) malloc(cache->size);
+    // clock_gettime(CLOCK_MONOTONIC, &cache->time);
+    // char ** contents_pointer = (char**) (buf+56);
+    // memcpy(cache->contents, *contents_pointer, cache->size);
+
+    // cache_lock.lock();
+    // cache_it = cache_map.find(cache_key);
+    // if(cache_it != cache_map.end()) {
+    //     free(cache_it->second->contents);
+    //     free(cache_it->second);
+    // }
+    // cache_map[cache_key] = cache;
+    // if(cache_key.size() > 10) {
+    //     std::string remove_key = cache_list.front();
+    //     cache_list.pop_front();
+    //     cache_it = cache_map.find(cache_key);
+    //     if(cache_it != cache_map.end()) {
+    //         cache_map.erase(cache_key);
+    //         free(cache_it->second->contents);
+    //         free(cache_it->second);
+    //     }
+    // }
+    // cache_lock.unlock();
+
     S3FS_MALLOCTRIM(0);
-
-     // 以下是缓存部分
-    cache  = (struct moss_cache*) malloc(sizeof(struct moss_cache));
-    cache->len = *( unsigned*)(buf + 68);
-    cache->size = *( unsigned*)(buf + 72);
-    cache->contents = (char*) malloc(cache->size);
-    clock_gettime(CLOCK_MONOTONIC, &cache->time);
-    char ** contents_pointer = (char**) (buf+56);
-    memcpy(cache->contents, *contents_pointer, cache->size);
-
-    cache_lock.lock();
-    cache_it = cache_map.find(cache_key);
-    if(cache_it != cache_map.end()) {
-        free(cache_it->second->contents);
-        free(cache_it->second);
-    }
-    cache_map[cache_key] = cache;
-
-    if(cache_key.size() > 10) {
-        std::string remove_key = cache_list.front();
-        cache_list.pop_front();
-        cache_it =  cache_map.find(cache_key);
-        if(cache_it != cache_map.end()) {
-            cache_map.erase(cache_key);
-            free(cache_it->second->contents);
-            free(cache_it->second);
-        }
-    }
-
-    cache_lock.unlock();
-    // ****
     return result;
 }
 
