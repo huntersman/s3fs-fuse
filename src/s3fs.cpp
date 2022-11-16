@@ -77,6 +77,7 @@ struct moss_cache {
     unsigned len;
     unsigned size;
     char* contents;
+    struct timespec time;
 };
 
 //-------------------------------------------------------------------
@@ -3354,22 +3355,26 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     cache_it = cache_map.find(cache_key);
     struct moss_cache* cache = NULL;
     if(cache_it != cache_map.end()) {
-        cache = cache_it->second;
-        unsigned* len = (unsigned*)(buf + 68);
-        *len = cache->len;
-        unsigned* size = (unsigned*)(buf + 72);
-        *size = cache->size;
-        char* cp_contents = (char*) malloc(cache->size);
-        memcpy(cp_contents, cache->contents, cache->size);
-        char** contents_pointer = (char**) (buf+56);
-        if(*contents_pointer != NULL) {
-            free(*contents_pointer);
+        struct timespec cur_time = {0, 0};
+        clock_gettime(CLOCK_MONOTONIC, &cur_time);
+        if(cur_time.tv_sec - cache_it->second->time.tv_sec < 60) {
+            cache = cache_it->second;
+            unsigned* len = ( unsigned*)(buf + 68);
+            *len = cache->len;
+            unsigned* size = ( unsigned*)(buf + 72);
+            *size = cache->size;
+            char* cp_contents = (char*) malloc(cache->size);
+            memcpy(cp_contents, cache->contents, cache->size);
+            char ** contents_pointer = (char**) (buf+56);
+            if(*contents_pointer != NULL) {
+                free(*contents_pointer);
+            }
+            *contents_pointer = cp_contents;
         }
-        *contents_pointer = cp_contents;
     }
-
     cache_lock.unlock();
-        if(cache != NULL) {
+
+    if(cache != NULL) {
         return 0;
     }
     S3ObjList head;
@@ -3406,6 +3411,7 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
         cache->size = *(unsigned*)(buf + 72);
         bufferSize-=cache->size;
         cache->contents = (char*) malloc(cache->size);
+        clock_gettime(CLOCK_MONOTONIC, &cache->time);
         char** contents_pointer = (char**) (buf+56);
         memcpy(cache->contents, *contents_pointer, cache->size);
 
