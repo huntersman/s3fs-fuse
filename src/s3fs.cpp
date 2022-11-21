@@ -1179,7 +1179,6 @@ static int s3fs_mkdir(const char* _path, mode_t mode)
     return result;
 }
 
-static std::mutex unlinkLock;
 //删除对象
 static int s3fs_unlink(const char* _path)
 {
@@ -1191,14 +1190,6 @@ static int s3fs_unlink(const char* _path)
     if(0 != (result = check_parent_object_access(path, W_OK | X_OK))){
         return result;
     }
-
-    unlinkLock.lock();
-    std::pair<std::string,std::string> filePathAndName=getFilePathAndName(path);
-    std::map<std::string,std::set<std::string>>::iterator it=fillerCache.find(filePathAndName.first);
-    if (it != fillerCache.end()){
-        it->second.erase(it->second.find(filePathAndName.second));
-    }
-    unlinkLock.unlock();
 
     S3fsCurl s3fscurl;
     result = s3fscurl.DeleteRequest(path);
