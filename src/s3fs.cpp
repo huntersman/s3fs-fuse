@@ -115,7 +115,6 @@ static bool use_wtf8              = false;
 static off_t fake_diskfree_size   = -1; // default is not set(-1)
 static int max_thread_count       = 5;  // default is 5
 static bool update_parent_dir_stat= true;   // default support updating parent directory stats
-static std::map<std::string,std::set<std::string>> fillerCache;
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -1120,7 +1119,6 @@ static int create_directory_object(const char* path, mode_t mode, const struct t
     return s3fscurl.PutRequest(tpath.c_str(), meta, -1);    // fd=-1 means for creating zero byte object.
 }
 
-static std::mutex mkdirLock;
 static int s3fs_mkdir(const char* _path, mode_t mode)
 {
     WTF8_ENCODE(path)
@@ -1143,16 +1141,6 @@ static int s3fs_mkdir(const char* _path, mode_t mode)
         }
         return result;
     }
-
-    mkdirLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(path);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    mkdirLock.unlock();
 
     std::string xattrvalue;
     const char* pxattrvalue;
@@ -1223,7 +1211,6 @@ static int directory_empty(const char* path)
     return 0;
 }
 
-static std::mutex rmdirLock;
 //删除目录
 static int s3fs_rmdir(const char* _path)
 {
@@ -1242,11 +1229,6 @@ static int s3fs_rmdir(const char* _path)
     if(directory_empty(path) != 0){
         return -ENOTEMPTY;
     }
-
-    rmdirLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(path);
-    fillerCache.erase(filePathAndName.first);
-    rmdirLock.unlock();
 
     strpath = path;
     if('/' != *strpath.rbegin()){
@@ -1373,7 +1355,6 @@ static int s3fs_symlink(const char* _from, const char* _to)
     return result;
 }
 
-static std::mutex renameObjectLock;
 static int rename_object(const char* from, const char* to, bool update_ctime)
 {
     int         result;
@@ -1394,16 +1375,6 @@ static int rename_object(const char* from, const char* to, bool update_ctime)
         return result;
     }
     std::string strSourcePath        = (mount_prefix.empty() && 0 == strcmp("/", from)) ? "//" : from;
-
-    renameObjectLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(to);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    renameObjectLock.unlock();
 
     if(update_ctime){
         meta["x-amz-meta-ctime"]     = s3fs_str_realtime();
@@ -1470,7 +1441,6 @@ static int rename_object(const char* from, const char* to, bool update_ctime)
     return result;
 }
 
-static std::mutex renameObjectNocopyLock;
 static int rename_object_nocopy(const char* from, const char* to, bool update_ctime)
 {
     int result;
@@ -1485,16 +1455,6 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
         // not permit removing "from" object parent dir.
         return result;
     }
-
-    renameObjectNocopyLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(to);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    renameObjectNocopyLock.unlock();
 
     // open & load
     {   // scope for AutoFdEntity
@@ -1535,7 +1495,6 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
     return result;
 }
 
-static std::mutex renameLargeObjectLock;
 static int rename_large_object(const char* from, const char* to)
 {
     int         result;
@@ -1555,16 +1514,6 @@ static int rename_large_object(const char* from, const char* to)
     if(0 != (result = get_object_attribute(from, &buf, &meta, false))){
         return result;
     }
-
-    renameLargeObjectLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(to);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    renameLargeObjectLock.unlock();
 
     S3fsCurl s3fscurl(true);
     if(0 != (result = s3fscurl.MultipartRenameRequest(from, to, meta, buf.st_size))){
@@ -1610,7 +1559,6 @@ static int clone_directory_object(const char* from, const char* to, bool update_
     return result;
 }
 
-static std::mutex renameDirectoryLock;
 static int rename_directory(const char* from, const char* to)
 {
     S3ObjList head;
@@ -1696,16 +1644,6 @@ static int rename_directory(const char* from, const char* to)
             return -ENOMEM;
         }
     }
-
-    renameDirectoryLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(to);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    renameDirectoryLock.unlock();
 
     //
     // rename
@@ -2837,7 +2775,6 @@ static std::pair<std::string,std::string> getFilePathAndName(const char* _path){
     return std::make_pair(filePath,fileName);
 }
 
-static std::mutex writeLock;
 //写入对象，每次最多写65536B，即64KB
 static int s3fs_write(const char* _path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
 {
@@ -2845,16 +2782,6 @@ static int s3fs_write(const char* _path, const char* buf, size_t size, off_t off
     ssize_t res;
 
     S3FS_PRN_DBG("[path=%s][size=%zu][offset=%lld][pseudo_fd=%llu]", path, size, static_cast<long long int>(offset), (unsigned long long)(fi->fh));
-
-    writeLock.lock();
-    std::pair<std::string,std::string> filePathAndName = getFilePathAndName(path);
-    std::set<std::string> fileNameSet;
-    if (fillerCache.count(filePathAndName.first)>0){
-        fileNameSet=fillerCache.find(filePathAndName.first)->second;
-    }
-    fileNameSet.insert(filePathAndName.second);
-    fillerCache[filePathAndName.first]=fileNameSet;
-    writeLock.unlock();
 
     AutoFdEntity autoent;
     FdEntity*    ent;
