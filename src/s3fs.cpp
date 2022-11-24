@@ -3262,7 +3262,7 @@ static int clearCache(const char* _path){
             free(cache_it->second);
         }
     }
-    S3FS_PRN_DBG("Success Clear cache");
+    S3FS_PRN_DBG("Success clear cache");
     return 0;
 }
 
@@ -3286,9 +3286,9 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
         clock_gettime(CLOCK_MONOTONIC, &cur_time);
         if(cur_time.tv_sec - cache_it->second->time.tv_sec < 60) {
             cache = cache_it->second;
-            unsigned* len = ( unsigned*)(buf + 68);
+            unsigned* len = (unsigned*)(buf + 68);
             *len = cache->len;
-            unsigned* size = ( unsigned*)(buf + 72);
+            unsigned* size = (unsigned*)(buf + 72);
             *size = cache->size;
             char* cp_contents = (char*) malloc(cache->size);
             memcpy(cp_contents, cache->contents, cache->size);
@@ -3302,6 +3302,7 @@ static int s3fs_readdir(const char* _path, void* buf, fuse_fill_dir_t filler, of
     cache_lock.unlock();
 
     if(cache != NULL) {
+        S3FS_PRN_DBG("Using Cache, remainging buffer size=%d",bufferSize);
         return 0;
     }
     S3ObjList head;
