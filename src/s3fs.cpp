@@ -3257,9 +3257,13 @@ static int clearCache(const char* _path){
             if (cache_it->second){
                 S3FS_PRN_DBG("Clear cache");
                 bufferSize+=cache_it->second->size;
+                S3FS_PRN_DBG("BufferSize=%d",bufferSize);
                 cache_map.erase(cache_key);
+                S3FS_PRN_DBG("Erase cache_key");
                 free(cache_it->second->contents);
+                S3FS_PRN_DBG("Free contents");
                 free(cache_it->second);
+                S3FS_PRN_DBG("Free moss_cache");
             }
         }
     }
