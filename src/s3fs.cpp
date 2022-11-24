@@ -2225,20 +2225,19 @@ static int update_mctime_parent_directory(const char* _path)
     dirtype         nDirType = DIRTYPE_UNKNOWN;
 
     S3FS_PRN_INFO2("[path=%s]", path);
-
     // get parent directory path
     parentpath = mydirname(path);
-
+    S3FS_PRN_DBG("[parentpath=%s]",parentpath.c_str());
     // clear readdir cache
     if (clearCache(parentpath.data())!=0){
         S3FS_PRN_CRIT("Failed to clear cache");
     }
-
+    S3FS_PRN_DBG("End clearCache");
     // check & get directory type
     if(0 != (result = chk_dir_object_type(parentpath.c_str(), newpath, nowpath, nowcache, &meta, &nDirType))){
         return result;
     }
-
+    S3FS_PRN_DBG("End chk_dir_object_type");
     // get directory stat
     //
     // [NOTE]
@@ -2250,6 +2249,7 @@ static int update_mctime_parent_directory(const char* _path)
         // If there is not the target file(object), result is -ENOENT.
         return result;
     }
+    S3FS_PRN_DBG("End get_object_attribute");
     if (root.compare(parentpath)==0){
         return 0;
     }
@@ -2261,13 +2261,15 @@ static int update_mctime_parent_directory(const char* _path)
 
     // make atime/mtime/ctime for updating
     s3fs_realtime(mctime);
+    S3FS_PRN_DBG("End s3fs_realtime");
     set_stat_to_timespec(stbuf, ST_TYPE_ATIME, atime);
-
+    S3FS_PRN_DBG("End set_stat_to_timespec");
     if(0 == atime.tv_sec && 0 == atime.tv_nsec){
         atime = mctime;
     }
 
     if(nocopyapi || IS_REPLACEDIR(nDirType) || IS_CREATE_MP_STAT(parentpath.c_str())){
+        S3FS_PRN_DBG("nocopyapi");
         // Should rebuild directory object(except new type)
         // Need to remove old dir("dir" etc) and make new dir("dir/")
         std::string xattrvalue;
@@ -2284,15 +2286,18 @@ static int update_mctime_parent_directory(const char* _path)
                 return result;
             }
         }
+        S3FS_PRN_DBG("End remove_old_type_dir");
         if(!nowcache.empty()){
             StatCache::getStatCacheData()->DelStat(nowcache);
         }
-
+        S3FS_PRN_DBG("End DelStat");
         // Make new directory object("dir/")
         if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
             return result;
         }
+        S3FS_PRN_DBG("End create_directory_object");
     }else{
+        S3FS_PRN_DBG("copyapi");
         std::string strSourcePath              = (mount_prefix.empty() && "/" == nowpath) ? "//" : nowpath;
         headers_t   updatemeta;
         updatemeta["x-amz-meta-mtime"]         = str(mctime);
@@ -2302,12 +2307,14 @@ static int update_mctime_parent_directory(const char* _path)
         updatemeta["x-amz-metadata-directive"] = "REPLACE";
 
         merge_headers(meta, updatemeta, true);
-
+        S3FS_PRN_DBG("End merge_headers");
         // upload meta for parent directory.
         if(0 != (result = put_headers(nowpath.c_str(), meta, true))){
             return result;
         }
+        S3FS_PRN_DBG("End put_headers");
         StatCache::getStatCacheData()->DelStat(nowcache);
+        S3FS_PRN_DBG("End DelStat");
     }
     S3FS_MALLOCTRIM(0);
 
