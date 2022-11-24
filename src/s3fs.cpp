@@ -115,6 +115,11 @@ static bool use_wtf8              = false;
 static off_t fake_diskfree_size   = -1; // default is not set(-1)
 static int max_thread_count       = 5;  // default is 5
 static bool update_parent_dir_stat= true;   // default support updating parent directory stats
+static std::map<std::string, struct moss_cache*> cache_map;
+static std::mutex cache_lock;
+static std::mutex clearCache_lock;
+static std::map<std::string, std::string> pathToCacheKey;
+static int bufferSize = 200*1024*1024;
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -3241,29 +3246,23 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     return result;
 }
 
-static std::map<std::string, struct moss_cache*> cache_map;
-static std::mutex cache_lock;
-static std::mutex clearCache_lock;
-static std::map<std::string, std::string> pathToCacheKey;
-static int bufferSize = 200*1024*1024;
-
 static int clearCache(const char* _path){
     WTF8_ENCODE(path)
     std::map<std::string, struct moss_cache*>::iterator cache_it;
     std::map<std::string,std::string>::iterator it = pathToCacheKey.find(path);
     if(it != pathToCacheKey.end()) {
-        S3FS_PRN_DBG("[Find Cache key]");
+        S3FS_PRN_DBG("Find Cache key");
         std::string cache_key=it->second;
         cache_it = cache_map.find(cache_key);
         if(cache_it != cache_map.end()) {
-            S3FS_PRN_DBG("[Clear cache]");
+            S3FS_PRN_DBG("Clear cache");
             bufferSize+=cache_it->second->size;
             cache_map.erase(cache_key);
             free(cache_it->second->contents);
             free(cache_it->second);
         }
     }
-    S3FS_PRN_DBG("[Success Clear cache]");
+    S3FS_PRN_DBG("Success Clear cache");
     return 0;
 }
 
