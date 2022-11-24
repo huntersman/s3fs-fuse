@@ -117,7 +117,6 @@ static int max_thread_count       = 5;  // default is 5
 static bool update_parent_dir_stat= true;   // default support updating parent directory stats
 static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
-static std::mutex clearCache_lock;
 static std::map<std::string, std::string> pathToCacheKey;
 static int bufferSize = 200*1024*1024;
 //-------------------------------------------------------------------
@@ -2234,11 +2233,11 @@ static int update_mctime_parent_directory(const char* _path)
     parentpath = mydirname(path);
     S3FS_PRN_DBG("[parentpath=%s]",parentpath.c_str());
     // clear readdir cache
-    clearCache_lock.lock();
+    cache_lock.lock();
     if (clearCache(parentpath.data())!=0){
         S3FS_PRN_CRIT("Failed to clear cache");
     }
-    clearCache_lock.unlock();
+    cache_lock.unlock();
     S3FS_PRN_DBG("End clearCache");
     // check & get directory type
     if(0 != (result = chk_dir_object_type(parentpath.c_str(), newpath, nowpath, nowcache, &meta, &nDirType))){
