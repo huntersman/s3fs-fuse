@@ -3254,11 +3254,13 @@ static int clearCache(const char* _path){
         std::string cache_key=it->second;
         cache_it = cache_map.find(cache_key);
         if(cache_it != cache_map.end()) {
-            S3FS_PRN_DBG("Clear cache");
-            bufferSize+=cache_it->second->size;
-            cache_map.erase(cache_key);
-            free(cache_it->second->contents);
-            free(cache_it->second);
+            if (cache_it->second){
+                S3FS_PRN_DBG("Clear cache");
+                bufferSize+=cache_it->second->size;
+                cache_map.erase(cache_key);
+                free(cache_it->second->contents);
+                free(cache_it->second);
+            }
         }
     }
     S3FS_PRN_DBG("Success clear cache");
