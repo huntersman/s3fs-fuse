@@ -11,7 +11,7 @@ RUN apk --no-cache add ca-certificates automake g++ git libcurl wget alpine-sdk 
 libxml2-dev make libressl-dev mailcap fuse-dev curl-dev && \
 git clone https://github.com/huntersman/s3fs-fuse.git /tmp/s3fs-fuse && \
 cd /tmp/s3fs-fuse && ./autogen.sh && ./configure && make && make install && \
-/usr/local/bin/s3fs --version && mkdir -p "$MNT_POINT" 
+/usr/local/bin/s3fs --version
 
 VOLUME ["/data"]
 
