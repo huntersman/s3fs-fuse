@@ -2233,11 +2233,9 @@ static int update_mctime_parent_directory(const char* _path)
     parentpath = mydirname(path);
     S3FS_PRN_DBG("[parentpath=%s]",parentpath.c_str());
     // clear readdir cache
-    cache_lock.lock();
     if (clearCache(parentpath.data())!=0){
         S3FS_PRN_CRIT("Failed to clear cache");
     }
-    cache_lock.unlock();
     S3FS_PRN_DBG("End clearCache");
     // check & get directory type
     if(0 != (result = chk_dir_object_type(parentpath.c_str(), newpath, nowpath, nowcache, &meta, &nDirType))){
@@ -3248,6 +3246,7 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
 static int clearCache(const char* _path){
     WTF8_ENCODE(path)
     std::map<std::string, struct moss_cache*>::iterator cache_it;
+    cache_lock.lock();
     std::map<std::string,std::string>::iterator it = pathToCacheKey.find(path);
     if(it != pathToCacheKey.end()) {
         S3FS_PRN_DBG("Find Cache key");
@@ -3267,6 +3266,7 @@ static int clearCache(const char* _path){
             }
         }
     }
+    cache_lock.unlock();
     S3FS_PRN_DBG("Success clear cache");
     return 0;
 }
