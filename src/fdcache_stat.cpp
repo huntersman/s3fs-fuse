@@ -147,11 +147,11 @@ bool CacheFileStat::RenameCacheFileStat(const char* oldpath, const char* newpath
         return true;
     }
 
-    // link and unlink
-    if(-1 == link(old_filestat.c_str(), new_filestat.c_str())){
-        S3FS_PRN_ERR("failed to link old cache file stat path(%s) to new cache file stat path(%s) by errno(%d).", old_filestat.c_str(), new_filestat.c_str(), errno);
-        return false;
-    }
+    // link and unlink，硬链接
+    // if(-1 == link(old_filestat.c_str(), new_filestat.c_str())){
+    //     S3FS_PRN_ERR("failed to link old cache file stat path(%s) to new cache file stat path(%s) by errno(%d).", old_filestat.c_str(), new_filestat.c_str(), errno);
+    //     return false;
+    // }
     if(-1 == unlink(old_filestat.c_str())){
         S3FS_PRN_ERR("failed to unlink old cache file stat path(%s) by errno(%d).", old_filestat.c_str(), errno);
         return false;

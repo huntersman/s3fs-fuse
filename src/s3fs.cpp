@@ -1487,7 +1487,7 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
             S3FS_PRN_ERR("could not upload file(%s): result=%d", to, result);
             return result;
         }
-        FdManager::DeleteCacheFile(from);
+        FdManager::get()->Rename(from, to);
     }
 
     // Remove file
