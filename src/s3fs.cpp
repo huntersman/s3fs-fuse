@@ -2982,6 +2982,11 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
             S3FS_PRN_WARN("file(%s) is still opened(another pseudo fd is opend).", path);
         }
     }
+    
+    StatCache::getStatCacheData()->DelStat(path);
+    StatCache::getStatCacheData()->DelSymlink(path);
+    FdManager::DeleteCacheFile(path);
+
     S3FS_MALLOCTRIM(0);
 
     return 0;
@@ -4213,9 +4218,9 @@ static void* s3fs_init(struct fuse_conn_info* conn)
     S3FS_PRN_INIT_INFO("init v%s(commit:%s) with %s, credential-library(%s)", VERSION, COMMIT_HASH_VAL, s3fs_crypt_lib_name(), ps3fscred->GetCredFuncVersion(false));
 
     // cache(remove cache dirs at first)
-    if(is_remove_cache && (!CacheFileStat::DeleteCacheFileStatDirectory() || !FdManager::DeleteCacheDirectory())){
-        S3FS_PRN_DBG("Could not initialize cache directory.");
-    }
+    // if(is_remove_cache && (!CacheFileStat::DeleteCacheFileStatDirectory() || !FdManager::DeleteCacheDirectory())){
+    //     S3FS_PRN_DBG("Could not initialize cache directory.");
+    // }
 
     // check loading IAM role name
     if(!ps3fscred->LoadIAMRoleFromMetaData()){
@@ -4262,9 +4267,9 @@ static void s3fs_destroy(void*)
     }
 
     // cache(remove at last)
-    if(is_remove_cache && (!CacheFileStat::DeleteCacheFileStatDirectory() || !FdManager::DeleteCacheDirectory())){
-        S3FS_PRN_WARN("Could not remove cache directory.");
-    }
+    // if(is_remove_cache && (!CacheFileStat::DeleteCacheFileStatDirectory() || !FdManager::DeleteCacheDirectory())){
+    //     S3FS_PRN_WARN("Could not remove cache directory.");
+    // }
 }
 
 static int s3fs_access(const char* path, int mask)
