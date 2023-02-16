@@ -80,6 +80,17 @@ struct moss_cache {
     struct timespec time;
 };
 
+typedef struct 
+{
+    std::string path;
+    struct fuse_file_info* fi;
+}dto;
+
+typedef struct 
+{
+    std::string path;
+    struct fuse_file_info* fi;
+}doFlushDto;
 //-------------------------------------------------------------------
 // Static variables
 //-------------------------------------------------------------------
@@ -119,6 +130,7 @@ static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
 static std::map<std::string, std::string> pathToCacheKey;
 static int bufferSize = 200*1024*1024;
+static std::mutex dto_lock;
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -196,6 +208,7 @@ static int s3fs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off
 static int s3fs_access(const char* path, int mask);
 static void* s3fs_init(struct fuse_conn_info* conn);
 static void s3fs_destroy(void*);
+void* release(const char* path,struct fuse_file_info* fi);
 #if defined(__APPLE__)
 static int s3fs_setxattr(const char* path, const char* name, const char* value, size_t size, int flags, uint32_t position);
 static int s3fs_getxattr(const char* path, const char* name, char* value, size_t size, uint32_t position);
@@ -2845,13 +2858,58 @@ static int s3fs_statfs(const char* _path, struct statvfs* stbuf)
     return 0;
 }
 
+void* doFlush(void* arg){
+    doFlushDto* adt = (doFlushDto*)arg;
+    const char* path = adt->path.c_str();
+    struct fuse_file_info* fi=adt->fi;
+    S3FS_PRN_INFO("doFlush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),adt->path.c_str());
+    AutoFdEntity autoent;
+    FdEntity*    ent;
+    if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
+        bool is_new_file = ent->IsDirtyNewFile();
+
+        ent->UpdateMtime(true);         // clear the flag not to update mtime.
+        ent->UpdateCtime();
+        ent->Flush(static_cast<int>(fi->fh), AutoLock::NONE, false);
+        StatCache::getStatCacheData()->DelStat(path);
+
+        if(is_new_file){
+            // update parent directory timestamp
+            int update_result;
+            if(0 != (update_result = update_mctime_parent_directory(path))){
+                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
+            }
+        }
+    }
+    return NULL;
+}
+
+void* flush(void* arg)
+{
+    dto* adt = (dto*)arg;
+    const char* path = adt->path.c_str();
+    struct fuse_file_info* fi=adt->fi;
+    doFlushDto dfd;
+    dfd.path = path;
+    dfd.fi=fi;
+    S3FS_PRN_INFO("flush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),adt->path.c_str());
+    pthread_t thread;
+    int rc = pthread_create(&thread, NULL, doFlush, &dfd);
+    if (rc != 0) {
+        S3FS_PRN_ERR("failed pthread_create - rc(%d)", rc);
+    }
+    pthread_join(thread,NULL);
+    release(dfd.path.c_str(),dfd.fi);
+    free(fi);
+    return NULL;
+}
+
 static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
 {
+    dto_lock.lock();
     WTF8_ENCODE(path)
+    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
     int result;
-
-    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
-
     int mask = (O_RDONLY != (fi->flags & O_ACCMODE) ? W_OK : R_OK);
     if(0 != (result = check_parent_object_access(path, X_OK))){
         return result;
@@ -2864,25 +2922,30 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
     }else if(0 != result){
         return result;
     }
-
-    AutoFdEntity autoent;
-    FdEntity*    ent;
-    if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
-        bool is_new_file = ent->IsDirtyNewFile();
-
-        ent->UpdateMtime(true);         // clear the flag not to update mtime.
-        ent->UpdateCtime();
-        result = ent->Flush(static_cast<int>(fi->fh), AutoLock::NONE, false);
-        StatCache::getStatCacheData()->DelStat(path);
-
-        if(is_new_file){
-            // update parent directory timestamp
-            int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(path))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
-            }
-        }
+    
+    dto adt;
+    pthread_t thread;
+    adt.path = path;
+    struct fuse_file_info* newFi=(fuse_file_info*)(malloc(sizeof(fuse_file_info)));
+    newFi->flags=fi->flags;
+    newFi->fh_old=fi->fh_old;
+    newFi->writepage=fi->writepage;
+    newFi->direct_io=fi->direct_io;
+    newFi->keep_cache=fi->keep_cache;
+    newFi->flush=fi->flush;
+    newFi->nonseekable=fi->nonseekable;
+    newFi->flock_release=fi->flock_release;
+    newFi->padding=fi->padding;
+    newFi->fh=fi->fh;
+    newFi->lock_owner=fi->lock_owner;
+    adt.fi=newFi;
+    
+    int rc = pthread_create(&thread, NULL, flush, &adt);
+    if (rc != 0) {
+        S3FS_PRN_ERR("failed pthread_create - rc(%d)", rc);
     }
+    pthread_detach(thread);
+    // dto_lock.unlock();
     S3FS_MALLOCTRIM(0);
 
     return result;
@@ -2924,11 +2987,12 @@ static int s3fs_fsync(const char* _path, int datasync, struct fuse_file_info* fi
 
     return result;
 }
-//写完后释放
-static int s3fs_release(const char* _path, struct fuse_file_info* fi)
+
+void* release(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
-    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
+
+    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
 
     // [NOTE]
     // All opened file's stats is cached with no truncate flag.
@@ -2955,7 +3019,7 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
         FdEntity* ent;
         if(NULL == (ent = autoent.Attach(path, static_cast<int>(fi->fh)))){
             S3FS_PRN_ERR("could not find pseudo_fd(%llu) for path(%s)", (unsigned long long)(fi->fh), path);
-            return -EIO;
+            return NULL;
         }
 
         bool is_new_file = ent->IsDirtyNewFile();
@@ -2964,7 +3028,7 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
         int result = ent->UploadPending(static_cast<int>(fi->fh), AutoLock::NONE);
         if(0 != result){
             S3FS_PRN_ERR("could not upload pending data(meta, etc) for pseudo_fd(%llu) / path(%s)", (unsigned long long)(fi->fh), path);
-            return result;
+            return NULL;
         }
 
         if(is_new_file){
@@ -2986,9 +3050,10 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
     StatCache::getStatCacheData()->DelStat(path);
     StatCache::getStatCacheData()->DelSymlink(path);
     FdManager::DeleteCacheFile(path);
+    autoent.CLOSE();
 
     S3FS_MALLOCTRIM(0);
-
+    dto_lock.unlock();
     return 0;
 }
 //打开目录
@@ -3116,7 +3181,7 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     s3obj_list_t  headlist;
     int           result = 0;
 
-    S3FS_PRN_INFO1("[path=%s][list=%zu]", path, headlist.size());
+    S3FS_PRN_ERR("[path=%s][list=%zu]", path, headlist.size());
 
     // Make base path list.
     head.GetNameList(headlist, true, false);  // get name with "/".
@@ -3183,6 +3248,7 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     }
 
     // Multi request
+    S3FS_PRN_ERR("[Multi request]");
     if(0 != (result = curlmulti.Request())){
         // If result is -EIO, it is something error occurred.
         // This case includes that the object is encrypting(SSE) and s3fs does not have keys.
@@ -5587,7 +5653,7 @@ int main(int argc, char* argv[])
     s3fs_oper.statfs      = s3fs_statfs;
     s3fs_oper.flush       = s3fs_flush;
     s3fs_oper.fsync       = s3fs_fsync;
-    s3fs_oper.release     = s3fs_release;
+    // s3fs_oper.release     = s3fs_release;
     s3fs_oper.opendir     = s3fs_opendir;
     s3fs_oper.readdir     = s3fs_readdir;
     s3fs_oper.init        = s3fs_init;
