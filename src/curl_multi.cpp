@@ -176,11 +176,11 @@ int S3fsMultiCurl::MultiPerform()
         }
         threads.push_back(thread);
     }
-    S3FS_PRN_ERR("Wait sem....");
+    S3FS_PRN_ERR("Wait sem....[pid=%d]",pthread_self());
     for(int i = 0; i < sem.get_value(); ++i){
         sem.wait();
     }
-    S3FS_PRN_ERR("End wait sem....");
+    S3FS_PRN_ERR("End wait sem....[pid=%d]",pthread_self());
     AutoLock lock(&completed_tids_lock);
     for (std::vector<pthread_t>::iterator titer = completed_tids.begin(); titer != completed_tids.end(); ++titer) {
         void*   retval;

@@ -2863,6 +2863,15 @@ void* doFlush(void* arg){
     const char* path = adt->path.c_str();
     struct fuse_file_info* fi=adt->fi;
     S3FS_PRN_INFO("doFlush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),adt->path.c_str());
+    return NULL;
+}
+
+void* flush(void* arg)
+{
+    dto* adt = (dto*)arg;
+    const char* path = adt->path.c_str();
+    struct fuse_file_info* fi=adt->fi;
+    S3FS_PRN_ERR("Flush[path=%s][pseudo_fd=%llu][adt.path=%s][Created Thread pid=%d]", path, (unsigned long long)(fi->fh),adt->path.c_str(),pthread_self());
     AutoFdEntity autoent;
     FdEntity*    ent;
     if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
@@ -2881,25 +2890,7 @@ void* doFlush(void* arg){
             }
         }
     }
-    return NULL;
-}
-
-void* flush(void* arg)
-{
-    dto* adt = (dto*)arg;
-    const char* path = adt->path.c_str();
-    struct fuse_file_info* fi=adt->fi;
-    doFlushDto dfd;
-    dfd.path = path;
-    dfd.fi=fi;
-    S3FS_PRN_INFO("flush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),adt->path.c_str());
-    pthread_t thread;
-    int rc = pthread_create(&thread, NULL, doFlush, &dfd);
-    if (rc != 0) {
-        S3FS_PRN_ERR("failed pthread_create - rc(%d)", rc);
-    }
-    pthread_join(thread,NULL);
-    release(dfd.path.c_str(),dfd.fi);
+    // release(adt->path.c_str(),adt->fi);
     free(fi);
     return NULL;
 }
@@ -2908,7 +2899,7 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
 {
     dto_lock.lock();
     WTF8_ENCODE(path)
-    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
+    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu][Main thread pid=%d]", path, (unsigned long long)(fi->fh),pthread_self());
     int result;
     int mask = (O_RDONLY != (fi->flags & O_ACCMODE) ? W_OK : R_OK);
     if(0 != (result = check_parent_object_access(path, X_OK))){
@@ -2944,8 +2935,9 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
     if (rc != 0) {
         S3FS_PRN_ERR("failed pthread_create - rc(%d)", rc);
     }
+    // 线程结束,path,fi资源都释放了
     pthread_detach(thread);
-    // dto_lock.unlock();
+    dto_lock.unlock();
     S3FS_MALLOCTRIM(0);
 
     return result;
@@ -3052,7 +3044,6 @@ void* release(const char* _path, struct fuse_file_info* fi)
     FdManager::DeleteCacheFile(path);
 
     S3FS_MALLOCTRIM(0);
-    dto_lock.unlock();
     return 0;
 }
 //打开目录
