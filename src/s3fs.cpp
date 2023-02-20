@@ -3050,7 +3050,6 @@ void* release(const char* _path, struct fuse_file_info* fi)
     StatCache::getStatCacheData()->DelStat(path);
     StatCache::getStatCacheData()->DelSymlink(path);
     FdManager::DeleteCacheFile(path);
-    autoent.CLOSE();
 
     S3FS_MALLOCTRIM(0);
     dto_lock.unlock();
