@@ -208,7 +208,7 @@ static int s3fs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off
 static int s3fs_access(const char* path, int mask);
 static void* s3fs_init(struct fuse_conn_info* conn);
 static void s3fs_destroy(void*);
-void* release(const char* path,struct fuse_file_info* fi);
+void* doRelease(const char* path,struct fuse_file_info* fi);
 #if defined(__APPLE__)
 static int s3fs_setxattr(const char* path, const char* name, const char* value, size_t size, int flags, uint32_t position);
 static int s3fs_getxattr(const char* path, const char* name, char* value, size_t size, uint32_t position);
@@ -2858,20 +2858,10 @@ static int s3fs_statfs(const char* _path, struct statvfs* stbuf)
     return 0;
 }
 
-void* doFlush(void* arg){
-    doFlushDto* adt = (doFlushDto*)arg;
-    const char* path = adt->path.c_str();
-    struct fuse_file_info* fi=adt->fi;
-    S3FS_PRN_INFO("doFlush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),adt->path.c_str());
-    return NULL;
-}
-
-void* flush(void* arg)
-{
-    dto* adt = (dto*)arg;
-    const char* path = adt->path.c_str();
-    struct fuse_file_info* fi=adt->fi;
-    S3FS_PRN_ERR("Flush[path=%s][pseudo_fd=%llu][adt.path=%s][Created Thread pid=%d]", path, (unsigned long long)(fi->fh),adt->path.c_str(),pthread_self());
+void doFlush(dto dto){
+    const char* path = dto.path.c_str();
+    struct fuse_file_info* fi=dto.fi;
+    S3FS_PRN_INFO("doFlush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),dto.path.c_str());
     AutoFdEntity autoent;
     FdEntity*    ent;
     if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
@@ -2885,21 +2875,29 @@ void* flush(void* arg)
         if(is_new_file){
             // update parent directory timestamp
             int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(path))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
+            if(0 != (update_result = update_mctime_parent_directory(dto.path.c_str()))){
+                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", dto.path.c_str(), update_result);
             }
         }
     }
-    // release(adt->path.c_str(),adt->fi);
+}
+
+void flush(dto dto)
+{
+    const char* path = dto.path.c_str();
+    struct fuse_file_info* fi=dto.fi;
+    S3FS_PRN_INFO("Flush[path=%s][pseudo_fd=%llu][adt.path=%s]", path, (unsigned long long)(fi->fh),dto.path.c_str());
+    std::thread thread (doFlush,dto);
+    thread.join();
+    doRelease(dto.path.c_str(),dto.fi);
     free(fi);
-    return NULL;
 }
 
 static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
 {
     dto_lock.lock();
     WTF8_ENCODE(path)
-    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu][Main thread pid=%d]", path, (unsigned long long)(fi->fh),pthread_self());
+    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
     int result;
     int mask = (O_RDONLY != (fi->flags & O_ACCMODE) ? W_OK : R_OK);
     if(0 != (result = check_parent_object_access(path, X_OK))){
@@ -2915,7 +2913,6 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
     }
     
     dto adt;
-    pthread_t thread;
     adt.path = path;
     struct fuse_file_info* newFi=(fuse_file_info*)(malloc(sizeof(fuse_file_info)));
     newFi->flags=fi->flags;
@@ -2930,13 +2927,7 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
     newFi->fh=fi->fh;
     newFi->lock_owner=fi->lock_owner;
     adt.fi=newFi;
-    
-    int rc = pthread_create(&thread, NULL, flush, &adt);
-    if (rc != 0) {
-        S3FS_PRN_ERR("failed pthread_create - rc(%d)", rc);
-    }
-    // 线程结束,path,fi资源都释放了
-    pthread_detach(thread);
+    std::thread (flush,adt).detach();
     dto_lock.unlock();
     S3FS_MALLOCTRIM(0);
 
@@ -2980,11 +2971,10 @@ static int s3fs_fsync(const char* _path, int datasync, struct fuse_file_info* fi
     return result;
 }
 
-void* release(const char* _path, struct fuse_file_info* fi)
+void* doRelease(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
-
-    S3FS_PRN_ERR("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
+    S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
 
     // [NOTE]
     // All opened file's stats is cached with no truncate flag.
@@ -3171,7 +3161,7 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     s3obj_list_t  headlist;
     int           result = 0;
 
-    S3FS_PRN_ERR("[path=%s][list=%zu]", path, headlist.size());
+    S3FS_PRN_INFO("[path=%s][list=%zu]", path, headlist.size());
 
     // Make base path list.
     head.GetNameList(headlist, true, false);  // get name with "/".
@@ -3238,7 +3228,6 @@ static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf
     }
 
     // Multi request
-    S3FS_PRN_ERR("[Multi request]");
     if(0 != (result = curlmulti.Request())){
         // If result is -EIO, it is something error occurred.
         // This case includes that the object is encrypting(SSE) and s3fs does not have keys.

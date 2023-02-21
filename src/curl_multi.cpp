@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <vector>
+#include <thread>
 
 #include "s3fs.h"
 #include "s3fs_logger.h"
@@ -134,7 +135,7 @@ int S3fsMultiCurl::MultiPerform()
     bool                     isMultiHead = false;
     Semaphore                sem(GetMaxParallelism());
     int                      rc;
-    // 请求数，如8GB对象分段上传，当分段大小为10MB时，会产生820个请求
+    
     for(s3fscurllist_t::iterator iter = clist_req.begin(); iter != clist_req.end(); ++iter) {
         pthread_t   thread;
         S3fsCurl*   s3fscurl = *iter;
@@ -176,11 +177,11 @@ int S3fsMultiCurl::MultiPerform()
         }
         threads.push_back(thread);
     }
-    S3FS_PRN_ERR("Wait sem....[pid=%d]",pthread_self());
+
     for(int i = 0; i < sem.get_value(); ++i){
         sem.wait();
     }
-    S3FS_PRN_ERR("End wait sem....[pid=%d]",pthread_self());
+
     AutoLock lock(&completed_tids_lock);
     for (std::vector<pthread_t>::iterator titer = completed_tids.begin(); titer != completed_tids.end(); ++titer) {
         void*   retval;
