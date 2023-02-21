@@ -86,11 +86,6 @@ typedef struct
     struct fuse_file_info* fi;
 }dto;
 
-typedef struct 
-{
-    std::string path;
-    struct fuse_file_info* fi;
-}doFlushDto;
 //-------------------------------------------------------------------
 // Static variables
 //-------------------------------------------------------------------
@@ -2871,14 +2866,6 @@ void doFlush(dto dto){
         ent->UpdateCtime();
         ent->Flush(static_cast<int>(fi->fh), AutoLock::NONE, false);
         StatCache::getStatCacheData()->DelStat(path);
-
-        if(is_new_file){
-            // update parent directory timestamp
-            int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(dto.path.c_str()))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", dto.path.c_str(), update_result);
-            }
-        }
     }
 }
 
@@ -2911,7 +2898,7 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
     }else if(0 != result){
         return result;
     }
-    
+
     dto adt;
     adt.path = path;
     struct fuse_file_info* newFi=(fuse_file_info*)(malloc(sizeof(fuse_file_info)));
@@ -3013,13 +3000,12 @@ void* doRelease(const char* _path, struct fuse_file_info* fi)
             return NULL;
         }
 
-        if(is_new_file){
-            // update parent directory timestamp
-            int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(path))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
-            }
+        // update parent directory timestamp
+        int update_result;
+        if(0 != (update_result = update_mctime_parent_directory(path))){
+            S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
         }
+        
     }
 
     // check - for debug
