@@ -1503,6 +1503,8 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
 
     // Stats
     StatCache::getStatCacheData()->DelStat(to);
+    StatCache::getStatCacheData()->DelSymlink(to);
+    FdManager::DeleteCacheFile(to);
 
     return result;
 }
@@ -2303,10 +2305,6 @@ static int update_mctime_parent_directory(const char* _path)
             StatCache::getStatCacheData()->DelStat(nowcache);
         }
         S3FS_PRN_DBG("End DelStat");
-        // Make new directory object("dir/")
-        if(0 != (result = create_directory_object(newpath.c_str(), stbuf.st_mode, atime, mctime, mctime, stbuf.st_uid, stbuf.st_gid, pxattrvalue))){
-            return result;
-        }
         S3FS_PRN_DBG("End create_directory_object");
     }else{
         S3FS_PRN_DBG("copyapi");
