@@ -1495,6 +1495,8 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
 
     // Stats
     StatCache::getStatCacheData()->DelStat(to);
+    StatCache::getStatCacheData()->DelSymlink(to);
+    FdManager::DeleteCacheFile(to);
 
     return result;
 }
