@@ -134,7 +134,7 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
 static int check_object_access(const char* path, int mask, struct stat* pstbuf);
 static int check_object_owner(const char* path, struct stat* pstbuf);
 static int check_parent_object_access(const char* path, int mask);
-static int get_local_fent(AutoFdEntity& autoent, FdEntity **entity, const char* path, int flags = O_RDONLY, bool is_load = false);
+static int get_local_fent(AutoFdEntity& autoent, FdEntity **entity, const char* path, int flags = O_RDONLY, bool is_load = false, bool init =false);
 static bool multi_head_callback(S3fsCurl* s3fscurl, void* param);
 static S3fsCurl* multi_head_retry_callback(S3fsCurl* s3fscurl);
 static int readdir_multi_head(const char* path, const S3ObjList& head, void* buf, fuse_fill_dir_t filler);
@@ -804,7 +804,7 @@ bool get_object_sse_type(const char* path, sse_type_t& ssetype, std::string& sse
     return true;
 }
 
-static int get_local_fent(AutoFdEntity& autoent, FdEntity **entity, const char* path, int flags, bool is_load)
+static int get_local_fent(AutoFdEntity& autoent, FdEntity **entity, const char* path, int flags, bool is_load, bool init)
 {
     int         result;
     struct stat stobj;
@@ -825,7 +825,9 @@ static int get_local_fent(AutoFdEntity& autoent, FdEntity **entity, const char* 
         set_stat_to_timespec(stobj, ST_TYPE_MTIME, st_mctime);
     }
     bool   force_tmpfile = S_ISREG(stobj.st_mode) ? false : true;
-
+    if(stobj.st_size >0 && init){
+        stobj.st_size=0;
+    }
     if(NULL == (ent = autoent.Open(path, &meta, stobj.st_size, st_mctime, flags, force_tmpfile, true, false, AutoLock::NONE))){
         S3FS_PRN_ERR("Could not open file. errno(%d)", errno);
         return -EIO;
@@ -2784,7 +2786,7 @@ static std::pair<std::string,std::string> getFilePathAndName(const char* _path){
     return std::make_pair(filePath,fileName);
 }
 
-//写入对象，每次最多写65536B，即64KB
+//写入对象，每次最多写128KB
 static int s3fs_write(const char* _path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)

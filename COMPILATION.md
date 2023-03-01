@@ -28,10 +28,9 @@ Keep in mind using the pre-built packages when available.
 git clone https://github.com/s3fs-fuse/s3fs-fuse.git
 cd s3fs-fuse
 ./autogen.sh
-yum install fuse-devel libxml2-devel libcurl-devel
+yum install -y fuse-devel libxml2-devel libcurl-devel
 ./configure
 make install LDFLAGS="-Wl,--copy-dt-needed-entries"
-sudo make install
 ```
 
 ## Compilation on Windows (using MSYS2)
