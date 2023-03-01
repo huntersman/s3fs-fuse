@@ -2534,7 +2534,7 @@ static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
         // open & load
         AutoFdEntity autoent;
         FdEntity*    ent;
-        if(0 != (result = get_local_fent(autoent, &ent, strpath.c_str(), O_RDWR, true))){
+        if(0 != (result = get_local_fent(autoent, &ent, strpath.c_str(), O_RDWR, true, true))){
             S3FS_PRN_ERR("could not open and read file(%s)", strpath.c_str());
             return result;
         }
