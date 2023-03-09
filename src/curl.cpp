@@ -2478,10 +2478,6 @@ int S3fsCurl::RequestPerform(bool dontAddAuthHeaders /*=false*/)
             case CURLE_ABORTED_BY_CALLBACK:
                 S3FS_PRN_ERR("### CURLE_ABORTED_BY_CALLBACK");
                 sleep(4);
-                {
-                    AutoLock lock(&S3fsCurl::curl_handles_lock);
-                    S3fsCurl::curl_times[hCurl] = time(0);
-                }
                 break; 
 
             case CURLE_PARTIAL_FILE:
