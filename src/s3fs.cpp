@@ -2717,7 +2717,7 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     FdEntity*    ent;
     headers_t    meta;
     if(0 != (result = get_object_attribute(path, NULL, &meta, true, NULL, true))){    // no truncate cache
-      return result;
+        return result;
     }
 
     struct timespec st_mctime;
@@ -2983,10 +2983,6 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
         }
     }
     
-    StatCache::getStatCacheData()->DelStat(path);
-    StatCache::getStatCacheData()->DelSymlink(path);
-    FdManager::DeleteCacheFile(path);
-
     S3FS_MALLOCTRIM(0);
 
     return 0;
