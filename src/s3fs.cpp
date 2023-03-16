@@ -1191,8 +1191,8 @@ static int s3fs_unlink(const char* _path)
     if(fileReading.find(path) == fileReading.end()){
         StatCache::getStatCacheData()->DelStat(path);
         StatCache::getStatCacheData()->DelSymlink(path);
-        FdManager::DeleteCacheFile(path);
     }
+    FdManager::DeleteCacheFile(path);
     // update parent directory timestamp
     int update_result;
     if(0 != (update_result = update_mctime_parent_directory(path))){
