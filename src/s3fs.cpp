@@ -119,7 +119,6 @@ static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
 static std::map<std::string, std::string> pathToCacheKey;
 static int bufferSize = 200*1024*1024;
-static std::set<std::string> fileReading;
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -1188,11 +1187,10 @@ static int s3fs_unlink(const char* _path)
 
     S3fsCurl s3fscurl;
     result = s3fscurl.DeleteRequest(path);
-    if(fileReading.find(path) == fileReading.end()){
-        StatCache::getStatCacheData()->DelStat(path);
-        StatCache::getStatCacheData()->DelSymlink(path);
-    }
+    StatCache::getStatCacheData()->DelStat(path);
+    StatCache::getStatCacheData()->DelSymlink(path);
     FdManager::DeleteCacheFile(path);
+
     // update parent directory timestamp
     int update_result;
     if(0 != (update_result = update_mctime_parent_directory(path))){
@@ -1531,11 +1529,13 @@ static int rename_large_object(const char* from, const char* to)
     }
     s3fscurl.DestroyCurlHandle();
 
+    // Rename cache file
+    FdManager::get()->Rename(from, to);
+
     // Remove file
     result = s3fs_unlink(from);
 
     StatCache::getStatCacheData()->DelStat(to);
-    FdManager::DeleteCacheFile(to);
 
     return result;
 }
@@ -2762,8 +2762,6 @@ static int s3fs_read(const char* _path, char* buf, size_t size, off_t offset, st
         return -EIO;
     }
 
-    fileReading.insert(path);
-
     // check real file size
     off_t realsize = 0;
     if(!ent->GetSize(realsize) || 0 == realsize){
@@ -2986,9 +2984,7 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
             S3FS_PRN_WARN("file(%s) is still opened(another pseudo fd is opend).", path);
         }
     }
-    if(fileReading.find(path) != fileReading.end()){
-        fileReading.erase(path);
-    }
+    
     S3FS_MALLOCTRIM(0);
 
     return 0;
