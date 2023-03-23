@@ -1407,8 +1407,6 @@ int FdEntity::RowFlush(int fd, const char* tpath, AutoLock::Type type, bool forc
         return -EBADF;
     }
 
-    AutoLock auto_lock(&fdent_lock, type);
-
     // check pseudo fd and its flag
     fdinfo_map_t::iterator miter = pseudo_fd_map.find(fd);
     if(pseudo_fd_map.end() == miter || NULL == miter->second){
