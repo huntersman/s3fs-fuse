@@ -28,11 +28,11 @@
 #include <map>
 #include <thread>
 #include <mutex>
-#include <unistd.h>
 #include <list>
 #include <cstddef>
 #include <vector>
 #include <set>
+#include <iconv.h>
 
 #include "common.h"
 #include "s3fs.h"
@@ -119,6 +119,12 @@ static std::map<std::string, struct moss_cache*> cache_map;
 static std::mutex cache_lock;
 static std::map<std::string, std::string> pathToCacheKey;
 static int bufferSize = 200*1024*1024;
+static std::map<std::string, std::mutex> fileLock;
+
+std::mutex& GetMutexForFile(const std::string& filename)
+{
+    return fileLock[filename];
+}
 //-------------------------------------------------------------------
 // Global functions : prototype
 //-------------------------------------------------------------------
@@ -772,6 +778,68 @@ static int check_parent_object_access(const char* path, int mask)
     return 0;
 }
 
+bool is_str_gbk(const char* str)
+{
+    return true;
+    // 对于gb2312来讲,首字节码位从0×81至0×FE，尾字节码位分别是0×40至0×FE
+    unsigned int nBytes = 0;
+    unsigned char chr = *str;
+    bool bAllAscii = true; 
+    for (unsigned int i = 0; str[i] != '\0'; ++i){
+        chr = *(str + i);
+        if ((chr & 0x80) != 0 && nBytes == 0){
+            bAllAscii = false;
+        }
+        if (nBytes == 0) {
+            if (chr >= 0x80) {
+                if (chr >= 0x81 && chr <= 0xFE){
+                    nBytes = +2;
+                }
+                else{
+                    return false;
+                }
+                nBytes--;
+            }
+        }else{
+            if (chr < 0x40 || chr>0xFE){
+                return false;
+            }
+            nBytes--;
+        }
+    }
+    if (nBytes != 0) {
+        return false;
+    }
+    if (bAllAscii){ 
+        return true;
+    }
+    return true;
+}
+
+int code_convert(char *from_charset, char *to_charset, char *inbuf, size_t inlen, char *outbuf, size_t outlen)
+{
+	iconv_t cd;
+	int rc;
+	char **pin = &inbuf;
+	char **pout = &outbuf;
+
+	cd = iconv_open(to_charset, from_charset);
+	if (cd == 0) return -1;
+	memset(outbuf, 0, outlen);
+	if (iconv(cd, pin, &inlen, pout, &outlen) == -1) return -1;
+	iconv_close(cd);
+	return 0;
+}
+
+int GbkToUtf8(char *inbuf, size_t inlen, char *outbuf, size_t outlen)
+{
+	return code_convert("gb2312", "utf-8", inbuf, inlen, outbuf, outlen);
+}
+int Utf8ToGbk(char *inbuf, size_t inlen, char *outbuf, size_t outlen)
+{
+	return code_convert("utf-8", "gb2312", inbuf, inlen, outbuf, outlen);
+}
+
 //
 // ssevalue is MD5 for SSE-C type, or KMS id for SSE-KMS
 //
@@ -885,11 +953,21 @@ int put_headers(const char* path, headers_t& meta, bool is_copy, bool use_st_siz
     return 0;
 }
 
+static char* gb2utf(const char* path){
+    if (is_str_gbk(path)){
+        std::string teststr = path;
+        char result_g[1024];
+        GbkToUtf8((char*)teststr.c_str(), strlen(teststr.c_str()), result_g, 1024);
+        path=strtok(result_g, "");
+    }
+    return const_cast<char*>(path);
+}
+
 static int s3fs_getattr(const char* _path, struct stat* stbuf)
 {
     WTF8_ENCODE(path)
     int result;
-
+    // path=gb2utf(path);
     S3FS_PRN_INFO("[path=%s]", path);
 
     // check parent directory attribute.
@@ -1030,6 +1108,7 @@ static int s3fs_mknod(const char *_path, mode_t mode, dev_t rdev)
 static int s3fs_create(const char* _path, mode_t mode, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
+    // path=gb2utf(path);
     int result;
     struct fuse_context* pcxt;
 
@@ -1497,8 +1576,6 @@ static int rename_object_nocopy(const char* from, const char* to, bool update_ct
 
     // Stats
     StatCache::getStatCacheData()->DelStat(to);
-    StatCache::getStatCacheData()->DelSymlink(to);
-    FdManager::DeleteCacheFile(to);
 
     return result;
 }
@@ -2462,6 +2539,7 @@ static int s3fs_utimens(const char* _path, const struct timespec ts[2])
 static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
 {
     WTF8_ENCODE(path)
+    // path=gb2utf(path);
     int         result;
     std::string strpath;
     std::string newpath;
@@ -2471,6 +2549,10 @@ static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
 
     S3FS_PRN_INFO1("[path=%s][mtime=%s][atime/ctime=%s]", path, str(ts[1]).c_str(), str(ts[0]).c_str());
 
+    // std::string filePath = path;
+    // if(!GetMutexForFile(filePath).try_lock()){
+    //     std::this_thread::sleep_for(sleepTimes);
+    // }
     if(0 != (result = check_parent_object_access(path, X_OK))){
         return result;
     }
@@ -2669,6 +2751,7 @@ static int s3fs_truncate(const char* _path, off_t size)
 static int s3fs_open(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
+    // path=gb2utf(path);
     int result;
     struct stat st;
     bool needs_flush = false;
@@ -2678,6 +2761,8 @@ static int s3fs_open(const char* _path, struct fuse_file_info* fi)
     if ((fi->flags & O_ACCMODE) == O_RDONLY && fi->flags & O_TRUNC) {
         return -EACCES;
     }
+    // std::string filePath = path;
+    // GetMutexForFile(filePath).lock();
 
     // [NOTE]
     // Delete the Stats cache only if the file is not open.
@@ -2788,12 +2873,12 @@ static std::pair<std::string,std::string> getFilePathAndName(const char* _path){
     return std::make_pair(filePath,fileName);
 }
 
-//写入对象，每次最多写128KB
+//写入对象，每次最多写64KB
 static int s3fs_write(const char* _path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
     ssize_t res;
-
+    // path=gb2utf(path);
     S3FS_PRN_DBG("[path=%s][size=%zu][offset=%lld][pseudo_fd=%llu]", path, size, static_cast<long long int>(offset), (unsigned long long)(fi->fh));
 
     AutoFdEntity autoent;
@@ -2851,7 +2936,7 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
     int result;
-
+    // path=gb2utf(path);
     S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
 
     int mask = (O_RDONLY != (fi->flags & O_ACCMODE) ? W_OK : R_OK);
@@ -2931,11 +3016,17 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
     S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
-
+    // path=gb2utf(path);
     // [NOTE]
     // All opened file's stats is cached with no truncate flag.
     // Thus we unset it here.
     StatCache::getStatCacheData()->ChangeNoTruncateFlag(std::string(path), false);
+
+    // if(!StatCache::getStatCacheData()->HasStat(path)){
+    //     std::string filePath=path;
+    //     S3FS_PRN_ERR("unlock %s",filePath.c_str());
+    //     GetMutexForFile(filePath).unlock();
+    // }
 
     // [NOTICE]
     // At first, we remove stats cache.
