@@ -346,10 +346,10 @@ int FdEntity::OpenMirrorFile()
         if(0 == link(cachepath.c_str(), mirrorpath.c_str())){
             break;
         }
-        if(EEXIST != errno){
-            S3FS_PRN_ERR("could not link mirror file(%s) to cache file(%s) by errno(%d).", mirrorpath.c_str(), cachepath.c_str(), errno);
-            return -errno;
-        }
+        // if(EEXIST != errno){
+        //     S3FS_PRN_ERR("could not link mirror file(%s) to cache file(%s) by errno(%d).", mirrorpath.c_str(), cachepath.c_str(), errno);
+        //     return -errno;
+        // }
         ++seed;
     }
 
