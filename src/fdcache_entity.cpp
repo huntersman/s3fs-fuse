@@ -2042,8 +2042,10 @@ ssize_t FdEntity::Write(int fd, const char* bytes, off_t start, size_t size)
     AutoLock auto_lock2(&fdent_data_lock);
 
     // check file size
+    // pagelist 缓冲区文件大小，start 偏移量
     if(pagelist.Size() < start){
         // grow file size
+        // 将文件剪切至start长度，不足会补充
         if(-1 == ftruncate(physical_fd, start)){
             S3FS_PRN_ERR("failed to truncate temporary file(physical_fd=%d).", physical_fd);
             return -errno;
