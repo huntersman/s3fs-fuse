@@ -463,7 +463,7 @@ static int get_object_attribute(const char* path, struct stat* pstbuf, headers_t
         // "HEAD /<directories ...>/ HTTP/1.1", so we do not need to change path at
         // here.
         //
-        strpath = "//";         // strpath is "//"
+        strpath = "/.nfs";         // strpath is "//"
     }else{
         strpath = path;
     }
@@ -1112,7 +1112,7 @@ static int create_directory_object(const char* path, mode_t mode, const struct t
     if('/' != *tpath.rbegin()){
         tpath += "/";
     }else if("/" == tpath && mount_prefix.empty()){
-        tpath = "//";       // for the mount point that is bucket root, change "/" to "//".
+        tpath = "/.nfs";       // for the mount point that is bucket root, change "/" to "//".
     }
 
     headers_t meta;
@@ -2262,7 +2262,7 @@ static int update_mctime_parent_directory(const char* _path)
         return result;
     }
     // 该方法会判断"/"不为parent目录，从而返回-EIO
-    if(!S_ISDIR(stbuf.st_mode)){
+    if(!S_ISDIR(stbuf.st_mode) && root.compare(parentpath)!=0){
         S3FS_PRN_ERR("path(%s) is not parent directory.", parentpath.c_str());
         return -EIO;
     }
@@ -2986,12 +2986,10 @@ static int s3fs_release(const char* _path, struct fuse_file_info* fi)
             return result;
         }
 
-        if(is_new_file){
-            // update parent directory timestamp
-            int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(path))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
-            }
+        // update parent directory timestamp
+        int update_result;
+        if(0 != (update_result = update_mctime_parent_directory(path))){
+            S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
         }
     }
 
@@ -3525,7 +3523,7 @@ static bool get_meta_xattr_value(const char* path, std::string& rawvalue)
 
     headers_t meta;
     if(0 != get_object_attribute(path, NULL, &meta)){
-        S3FS_PRN_ERR("Failed to get object(%s) headers", path);
+        S3FS_PRN_INFO("Failed to get object(%s) headers", path);
         return false;
     }
 
