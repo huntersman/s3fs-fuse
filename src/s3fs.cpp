@@ -2465,7 +2465,6 @@ static int s3fs_utimens_nocopy(const char* _path, const struct timespec ts[2])
 
     S3FS_PRN_INFO1("[path=%s][mtime=%s][atime/ctime=%s]", path, str(ts[1]).c_str(), str(ts[0]).c_str());
 
-    std::string filePath = path;
     if(0 != (result = check_parent_object_access(path, X_OK))){
         return result;
     }
@@ -2795,7 +2794,6 @@ static int s3fs_write(const char* _path, const char* buf, size_t size, off_t off
     ssize_t res;
     S3FS_PRN_DBG("[path=%s][size=%zu][offset=%lld][pseudo_fd=%llu]", path, size, static_cast<long long int>(offset), (unsigned long long)(fi->fh));
 
-    // 若某个文件没有release或者utimens_nocopy，但进行了write，报错
     AutoFdEntity autoent;
     FdEntity*    ent;
     if(NULL == (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
