@@ -80,6 +80,12 @@ struct moss_cache {
     struct timespec time;
 };
 
+typedef struct
+{
+    std::string path;
+    struct fuse_file_info* fi;
+}dto;
+
 //-------------------------------------------------------------------
 // Static variables
 //-------------------------------------------------------------------
@@ -120,7 +126,7 @@ static std::mutex cache_lock;
 static std::map<std::string, std::string> pathToCacheKey;
 static int bufferSize = 200*1024*1024;
 static std::map<std::string, std::mutex> fileLock;
-
+static std::mutex dto_lock;
 std::mutex& GetMutexForFile(const std::string& filename)
 {
     return fileLock[filename];
@@ -170,6 +176,9 @@ static int set_bucket(const char* arg);
 static int my_fuse_opt_proc(void* data, const char* arg, int key, struct fuse_args* outargs);
 static int clearCache(const char* _path);
 static std::pair<std::string,std::string> getFilePathAndName(const char* _path);
+static int doRelease(const char* _path, struct fuse_file_info* fi);
+static void flush(dto dto);
+static void doFlush(dto dto);
 //-------------------------------------------------------------------
 // fuse interface functions
 //-------------------------------------------------------------------
@@ -196,7 +205,6 @@ static int s3fs_write(const char* path, const char* buf, size_t size, off_t offs
 static int s3fs_statfs(const char* path, struct statvfs* stbuf);
 static int s3fs_flush(const char* path, struct fuse_file_info* fi);
 static int s3fs_fsync(const char* path, int datasync, struct fuse_file_info* fi);
-static int s3fs_release(const char* path, struct fuse_file_info* fi);
 static int s3fs_opendir(const char* path, struct fuse_file_info* fi);
 static int s3fs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi);
 static int s3fs_access(const char* path, int mask);
@@ -2845,8 +2853,31 @@ static int s3fs_statfs(const char* _path, struct statvfs* stbuf)
     return 0;
 }
 
+static void doFlush(dto dto){
+    const char* path = dto.path.c_str();
+    struct fuse_file_info* fi=dto.fi;
+    AutoFdEntity autoent;
+    FdEntity*    ent;
+    if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
+        ent->UpdateMtime(true);         // clear the flag not to update mtime.
+        ent->UpdateCtime();
+        ent->Flush(static_cast<int>(fi->fh), AutoLock::NONE, false);
+        StatCache::getStatCacheData()->DelStat(path);
+    }
+}
+
+static void flush(dto dto)
+{
+    struct fuse_file_info* fi=dto.fi;
+    std::thread thread (doFlush,dto);
+    thread.join();
+    doRelease(dto.path.c_str(),dto.fi);
+    free(fi);
+}
+
 static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
 {
+    dto_lock.lock();
     WTF8_ENCODE(path)
     int result;
     S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
@@ -2863,24 +2894,23 @@ static int s3fs_flush(const char* _path, struct fuse_file_info* fi)
         return result;
     }
 
-    AutoFdEntity autoent;
-    FdEntity*    ent;
-    if(NULL != (ent = autoent.GetExistFdEntity(path, static_cast<int>(fi->fh)))){
-        bool is_new_file = ent->IsDirtyNewFile();
-
-        ent->UpdateMtime(true);         // clear the flag not to update mtime.
-        ent->UpdateCtime();
-        result = ent->Flush(static_cast<int>(fi->fh), AutoLock::NONE, false);
-        StatCache::getStatCacheData()->DelStat(path);
-
-        if(is_new_file){
-            // update parent directory timestamp
-            int update_result;
-            if(0 != (update_result = update_mctime_parent_directory(path))){
-                S3FS_PRN_ERR("succeed to create the file(%s), but could not update timestamp of its parent directory(result=%d).", path, update_result);
-            }
-        }
-    }
+    dto dto;
+    dto.path = path;
+    struct fuse_file_info* newFi=(fuse_file_info*)(malloc(sizeof(fuse_file_info)));
+    newFi->flags=fi->flags;
+    newFi->fh_old=fi->fh_old;
+    newFi->writepage=fi->writepage;
+    newFi->direct_io=fi->direct_io;
+    newFi->keep_cache=fi->keep_cache;
+    newFi->flush=fi->flush;
+    newFi->nonseekable=fi->nonseekable;
+    newFi->flock_release=fi->flock_release;
+    newFi->padding=fi->padding;
+    newFi->fh=fi->fh;
+    newFi->lock_owner=fi->lock_owner;
+    dto.fi=newFi;
+    std::thread (flush,dto).detach();
+    dto_lock.unlock();
     S3FS_MALLOCTRIM(0);
 
     return result;
@@ -2923,7 +2953,7 @@ static int s3fs_fsync(const char* _path, int datasync, struct fuse_file_info* fi
     return result;
 }
 //写完后释放
-static int s3fs_release(const char* _path, struct fuse_file_info* fi)
+static int doRelease(const char* _path, struct fuse_file_info* fi)
 {
     WTF8_ENCODE(path)
     S3FS_PRN_INFO("[path=%s][pseudo_fd=%llu]", path, (unsigned long long)(fi->fh));
@@ -5578,7 +5608,7 @@ int main(int argc, char* argv[])
     s3fs_oper.statfs      = s3fs_statfs;
     s3fs_oper.flush       = s3fs_flush;
     s3fs_oper.fsync       = s3fs_fsync;
-    s3fs_oper.release     = s3fs_release;
+    // s3fs_oper.release     = s3fs_release;
     s3fs_oper.opendir     = s3fs_opendir;
     s3fs_oper.readdir     = s3fs_readdir;
     s3fs_oper.init        = s3fs_init;
